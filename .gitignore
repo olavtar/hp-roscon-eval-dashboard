@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.claude/
+config/versions.yaml
+data/sample_episodes/*.json
+!data/sample_episodes/.gitkeep
+.pytest_cache/
+.env.local
+*.env
+
+# Fixture episode data (synthetic, from Jeremy's olga-fixtures) -- not ours
+# to redistribute. Nothing under this directory is committed, README.md
+# included. Kept locally for testing; test_file_source.py skips gracefully
+# if it's absent.
+tests/fixtures/*

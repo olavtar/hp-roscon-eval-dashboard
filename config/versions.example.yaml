@@ -1,0 +1,9 @@
+# model_version -> curated training-set size (number of episodes it was
+# fine-tuned on). Copy to versions.yaml and fill in once the mapping is
+# provided -- this is what drives the "success rate vs training-set size"
+# comparison. Versions with no entry here still show up in every other
+# view, just without a dataset-size point.
+#
+# 0 is the baseline (known-good policy, no extra cube-shift fine-tune).
+# soarm-act-v1: 0
+# soarm-act-v2: 40
