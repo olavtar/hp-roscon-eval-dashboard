@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SO-ARM Policy Evaluation</title>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
   <header>
     <div>
       <h1>SO-ARM Policy Evaluation</h1>
-      <div class="subtitle">Compare policy performance &middot; read-only</div>
+      <div class="subtitle">Observed success rates &middot; read-only &middot; not a statistical proof of improvement</div>
     </div>
     <div class="header-actions">
       <span class="chip" id="source-chip"><span class="dot"></span> <span id="source-label">--</span></span>
@@ -21,11 +21,12 @@
 
   <main>
     <div class="notice">
-      <strong>Success</strong> = all three cubes on the tray (<code>task_success</code>),
-      including rejected episodes in the denominator.
-      <strong>Smoothness</strong> is averaged over successes only &mdash; failed episodes often
+      <strong>Primary metric</strong>: controlled-evaluation success rate (all three cubes on the tray,
+      <code>task_success</code>), including rejected episodes in the denominator when curator verdicts exist.
+      <strong>Secondary metric</strong>: smoothness among successful episodes only &mdash; failed episodes often
       barely move, which would make a worse policy look smoother.
-      <code>model_version</code> is grouped as-is.
+      Wilson confidence intervals are shown; they describe uncertainty in the observed rate, not proof that one
+      policy is statistically better than another.
     </div>
 
     <div class="section-heading">
@@ -36,22 +37,24 @@
     <section class="toolbar" id="controlled-picker" aria-label="Policy comparison"></section>
     <div id="controlled-cards" class="card-grid"></div>
     <div id="controlled-empty" class="no-data" style="display:none">
-      No evaluation records loaded. Mount a directory of episode JSON files at
-      <code>/records</code> or <code>/data/eval</code> (single records or a JSON array per file).
+      No comparison records loaded. Mount controlled-eval files at <code>/data/eval</code>
+      (<code>EVAL_DIR</code>) or, for offline demos only, a saved export at <code>/records</code>
+      (<code>RECORDS_DIR</code>) &mdash; the latter is labeled saved-file comparison, not controlled evaluation.
     </div>
 
-    <div class="two-col">
-      <div class="panel">
-        <div class="panel-head">
-          <h3>Learning curve</h3>
-          <p>Success rate vs. curated fine-tune episodes. Baseline is the version tagged with 0.</p>
-        </div>
-        <div class="panel-body"><svg id="learning-curve" class="chart" viewBox="0 0 720 260"></svg></div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Episode evidence</h3>
+        <p>Raw rows behind the aggregates below &mdash; use these to verify exactly what was counted</p>
       </div>
-
-      <div class="panel">
-        <div class="panel-head"><h3>Data integrity</h3></div>
-        <div class="panel-body integrity" id="integrity-checks"></div>
+      <div class="table-note" id="evidence-note"></div>
+      <div class="evidence-table-wrap">
+        <table>
+          <thead>
+            <tr><th>Version</th><th>Episode</th><th>Result</th><th>Cubes</th><th title="Lower = smoother motion">Smoothness &darr;=smoother</th><th>Steps</th><th>Timestamp</th></tr>
+          </thead>
+          <tbody id="evidence-body"></tbody>
+        </table>
       </div>
     </div>
 
@@ -76,18 +79,19 @@
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel-head">
-        <h3>Episode evidence</h3>
-        <p>Raw rows behind the aggregates above &mdash; use these to verify exactly what was counted</p>
+    <div class="two-col">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Learning curve</h3>
+          <p>Success rate vs. curated fine-tune episodes. Baseline is the version tagged with 0.</p>
+        </div>
+        <div class="panel-body"><svg id="learning-curve" class="chart" viewBox="0 0 720 260"></svg></div>
       </div>
-      <div class="table-note" id="evidence-note"></div>
-      <table>
-        <thead>
-          <tr><th>Version</th><th>Episode</th><th>Result</th><th>Cubes</th><th>Smoothness</th><th>Steps</th><th>Timestamp</th></tr>
-        </thead>
-        <tbody id="evidence-body"></tbody>
-      </table>
+
+      <div class="panel">
+        <div class="panel-head"><h3>Data integrity</h3></div>
+        <div class="panel-body integrity" id="integrity-checks"></div>
+      </div>
     </div>
 
     <section id="operational-section">
@@ -106,6 +110,6 @@
     <span id="footer-counts"></span>
   </footer>
 
-  <script src="dashboard.js?v=4"></script>
+  <script src="dashboard.js?v=7"></script>
 </body>
 </html>

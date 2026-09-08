@@ -72,11 +72,20 @@ function niceTicks(maxCount, targetLines = 4) {
 }
 function fmtNum(x, d = 4) { return x == null ? '--' : x.toFixed(d); }
 
-function originLabel(origin) {
+function originLabel(origin, sourceKind) {
   if (!origin) return '';
+  if (origin.startsWith('controlled-eval:')) return 'Controlled eval · ' + origin.slice('controlled-eval:'.length);
+  if (origin.startsWith('saved-files:')) return 'Saved-file comparison · ' + origin.slice('saved-files:'.length);
+  if (origin.startsWith('operational-replay:')) return 'Operational replay · ' + origin.slice('operational-replay:'.length);
   if (origin.startsWith('files:')) return origin.slice(6);
   if (origin.startsWith('live')) return 'Kafka + MinIO';
   return origin;
+}
+
+function controlledPanelTitle(sourceKind) {
+  if (sourceKind === 'eval') return 'Controlled evaluation';
+  if (sourceKind === 'saved-files') return 'Saved-file comparison';
+  return 'Success comparison';
 }
 
 async function fetchStats() {
@@ -97,10 +106,21 @@ function renderHeader(stats) {
   document.getElementById('loaded-chip').textContent = 'Loaded ' + new Date().toLocaleTimeString();
   const back = document.getElementById('backlink');
   back.href = stats.live_dashboard_url;
-  document.getElementById('controlled-origin').textContent = originLabel(stats.controlled.origin);
+  document.getElementById('controlled-origin').textContent = originLabel(stats.controlled.origin, stats.controlled.source_kind);
+  const heading = document.querySelector('.section-heading h2');
+  if (heading) heading.textContent = controlledPanelTitle(stats.controlled.source_kind);
+  const subtitle = document.getElementById('controlled-subtitle');
+  if (subtitle) {
+    const kind = stats.controlled.source_kind;
+    subtitle.textContent = kind === 'eval'
+      ? 'Primary metric: controlled-eval success rate · compare to baseline and previous dataset-size rung'
+      : kind === 'saved-files'
+        ? 'Observed success rates from saved files — not verified as controlled evaluation'
+        : 'All three cubes placed · injected failures excluded';
+  }
 }
 
-function renderPicker(allVersions) {
+function renderPicker(allVersions, versionsObj) {
   const el = document.getElementById('controlled-picker');
   if (allVersions.length === 0) {
     el.innerHTML = '';
@@ -117,18 +137,60 @@ function renderPicker(allVersions) {
   if (key === lastPickerKey) return;
   lastPickerKey = key;
 
+  // Group by `parent` (config/versions.yaml) so e.g. four independent
+  // fine-tunes of the same baseline show up nested under it via a native
+  // <optgroup> instead of an unrelated flat list. Versions with no known
+  // parent (or whose parent isn't itself in the list) stay top-level --
+  // never guess a lineage that isn't documented.
+  const childrenOf = {};
+  const isChild = new Set();
+  allVersions.forEach(v => {
+    const parent = (versionsObj[v] || {}).parent;
+    if (parent && allVersions.includes(parent)) {
+      (childrenOf[parent] = childrenOf[parent] || []).push(v);
+      isChild.add(v);
+    }
+  });
+  const topLevel = allVersions.filter(v => !isChild.has(v));
+
+  // Options already picked in another slot stay selectable (never disabled)
+  // -- picking one swaps the two slots (see the change handler below), so
+  // reordering/swapping never requires clearing a slot first. The label
+  // just says where it currently lives, since a bare <option> can't be
+  // styled to hint at that otherwise.
+  const optionTag = (v, selectedValue, elsewhereLabel) => {
+    const sel = selectedValue === v ? ' selected' : '';
+    const suffix = elsewhereLabel ? ` (currently ${elsewhereLabel})` : '';
+    return `<option value="${esc(v)}"${sel}>${esc(v)}${esc(suffix)}</option>`;
+  };
+
   el.innerHTML = POLICY_LABELS.map((label, i) => {
-    const others = new Set(selected.filter((v, j) => v && j !== i));
-    const opts = ['<option value="">—</option>'].concat(allVersions.map(v => {
-      const dis = others.has(v) ? ' disabled' : '';
-      const sel = selected[i] === v ? ' selected' : '';
-      return `<option value="${esc(v)}"${sel}${dis}>${esc(v)}</option>`;
-    }));
-    return `<div class="field"><label>${label}</label><select data-slot="${i}">${opts.join('')}</select></div>`;
+    const elsewhere = {};
+    selected.forEach((v, j) => { if (v && j !== i) elsewhere[v] = POLICY_LABELS[j]; });
+    let opts = '<option value="">—</option>';
+    topLevel.forEach(v => {
+      opts += optionTag(v, selected[i], elsewhere[v]);
+      if (childrenOf[v]) {
+        opts += `<optgroup label="↳ fine-tuned from ${esc(v)}">`;
+        childrenOf[v].forEach(c => { opts += optionTag(c, selected[i], elsewhere[c]); });
+        opts += '</optgroup>';
+      }
+    });
+    return `<div class="field"><label>${label}</label><select data-slot="${i}">${opts}</select></div>`;
   }).join('');
   el.querySelectorAll('select').forEach(sel => {
     sel.addEventListener('change', () => {
-      selected[+sel.dataset.slot] = sel.value;
+      const slot = +sel.dataset.slot;
+      const newValue = sel.value;
+      const previousValue = selected[slot];
+      if (newValue) {
+        // Picking a version that's already in another slot swaps the two
+        // slots instead of being blocked -- lets you reorder Policy A/B/C
+        // by just picking directly, no need to clear one first.
+        const conflictSlot = selected.findIndex((v, j) => j !== slot && v === newValue);
+        if (conflictSlot !== -1) selected[conflictSlot] = previousValue;
+      }
+      selected[slot] = newValue;
       lastPickerKey = '';
       render();
     });
@@ -144,6 +206,16 @@ function renderCards(containerId, versionsObj, versionList) {
   const baselineKey = findBaselineKey(versionsObj);
   const baseline = baselineKey ? versionsObj[baselineKey] : null;
   const baselineRate = baseline && !baseline.success_rate_incomplete ? baseline.success_rate : null;
+
+  // "Smoothest of the compared set" is a real, relative ranking among only
+  // the versions on screen right now -- not an invented absolute
+  // smooth/jerky cutoff. There's no documented threshold for that at this
+  // scale (the curator's own 0.15 gate is ~30x every real observed value),
+  // so a fabricated category would be worse than no category.
+  const smoothnessValues = versionList
+    .map(v => (versionsObj[v] || {}).mean_smoothness)
+    .filter(x => x != null);
+  const minSmoothness = smoothnessValues.length > 1 ? Math.min(...smoothnessValues) : null;
 
   container.innerHTML = versionList.map((v) => {
     const s = versionsObj[v];
@@ -175,7 +247,7 @@ function renderCards(containerId, versionsObj, versionList) {
       const pts = (s.success_rate - baselineRate) * 100;
       const cls = pts > 0 ? 'up' : pts < 0 ? 'down' : 'same';
       const sign = pts > 0 ? '+' : '';
-      delta = `<div class="delta ${cls}">${sign}${pts.toFixed(0)} pts vs baseline</div>`;
+      delta = `<div class="delta ${cls}">${sign}${pts.toFixed(0)} pts observed vs baseline</div>`;
     } else if (isBaseline) {
       delta = `<div class="delta same">reference policy</div>`;
     }
@@ -203,9 +275,9 @@ function renderCards(containerId, versionsObj, versionList) {
             <strong>${s.avg_cubes_placed != null ? s.avg_cubes_placed.toFixed(2) : '--'} / 3</strong>
             <span>peak per episode, all ${s.episode_count} runs</span>
           </div>
-          <div>
-            <span>Mean smoothness of successes ↓</span>
-            <strong>${fmtNum(s.mean_smoothness)}</strong>
+          <div title="Mean absolute per-joint delta between consecutive joint commands, successful episodes only -- smaller number = smoother motion">
+            <span>Mean smoothness of successes (lower = smoother)</span>
+            <strong>${fmtNum(s.mean_smoothness)}${s.mean_smoothness != null && s.mean_smoothness === minSmoothness ? ' <span class="badge finetuned" style="font-size:9px;vertical-align:middle">smoothest here</span>' : ''}</strong>
             <span>n=${smoothN == null ? 0 : smoothN}</span>
           </div>
         </div>
@@ -257,7 +329,7 @@ function renderLearningCurve(versionsObj) {
     const color = seriesColor(Math.max(0, colorSlotFor(v, activeSelected())));
     return `
     <circle cx="${x(s.dataset_size).toFixed(1)}" cy="${y(s.success_rate).toFixed(1)}" r="5" fill="${color}"><title>${esc(v)}: ${pct(s.success_rate)} (n=${s.episode_count})</title></circle>
-    <text x="${x(s.dataset_size).toFixed(1)}" y="${(y(s.success_rate) - 12).toFixed(1)}" text-anchor="middle" fill="var(--text)">${pct(s.success_rate)}</text>
+    <text x="${x(s.dataset_size).toFixed(1)}" y="${(y(s.success_rate) - 12).toFixed(1)}" text-anchor="middle" class="label">${pct(s.success_rate)}</text>
     <text x="${x(s.dataset_size).toFixed(1)}" y="${H - padB + 16}" text-anchor="middle">${s.dataset_size}</text>`;
   }).join('');
   svg.innerHTML = grid +
@@ -266,7 +338,7 @@ function renderLearningCurve(versionsObj) {
     `<polyline points="${line}" fill="none" stroke="${seriesColor(0)}" stroke-width="2.5"/>` +
     whiskers +
     dots +
-    `<text x="${(padL + W - padR) / 2}" y="${H - 4}" text-anchor="middle">Curated fine-tune episodes</text>`;
+    `<text x="${(padL + W - padR) / 2}" y="${H - 4}" text-anchor="middle" class="caption">Curated fine-tune episodes</text>`;
 }
 
 function renderCubesChart(versionsObj, versionList) {
@@ -338,8 +410,8 @@ function renderSmoothnessChart(snapshot, versionList) {
     return;
   }
 
-  const W = 720, rowH = 90, padL = 150, padR = 16, padT = 10;
-  const H = padT + rowH * versionList.length + 36;
+  const W = 720, rowH = 72, padL = 150, padR = 16, padT = 10;
+  const H = padT + rowH * versionList.length + 46;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const maxCount = Math.max(1, ...versionList.flatMap(v => keys.map(k => ((versionsObj[v] || {}).smoothness_hist || {})[k] || 0)));
   const barW = (W - padL - padR) / keys.length;
@@ -349,14 +421,14 @@ function renderSmoothnessChart(snapshot, versionList) {
     const hist = s.smoothness_hist || {};
     const color = seriesColor(vi);
     const rowTop = padT + vi * rowH;
-    const rowBase = rowTop + rowH - 22;
+    const rowBase = rowTop + rowH - 18;
     const nSucc = s.success_count || 0;
-    out += `<text x="4" y="${rowTop + 14}" fill="var(--text)">${esc(v)}</text>`;
-    out += `<text x="4" y="${rowTop + 28}">${nSucc} successful · mean ${fmtNum(s.mean_smoothness)}</text>`;
+    out += `<text x="4" y="${rowTop + 16}" class="label">${esc(v)}</text>`;
+    out += `<text x="4" y="${rowTop + 33}" class="meta">${nSucc} successful · mean ${fmtNum(s.mean_smoothness)}</text>`;
     out += svgEl('line', { class: 'axis', x1: padL, y1: rowBase, x2: W - padR, y2: rowBase });
     keys.forEach((bin, bi) => {
       const count = hist[bin] || 0;
-      const h = (count / maxCount) * (rowH - 28);
+      const h = (count / maxCount) * (rowH - 24);
       const bx = padL + bi * barW;
       out += `<rect x="${bx.toFixed(1)}" y="${(rowBase - h).toFixed(1)}" width="${(barW - 2).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}"><title>${bin}: ${count} successes</title></rect>`;
     });
@@ -366,10 +438,15 @@ function renderSmoothnessChart(snapshot, versionList) {
     }
   });
   keys.forEach((bin, bi) => {
-    const label = bin.startsWith('>=') ? bin : bin.split('-')[0];
-    out += `<text x="${(padL + bi * barW + barW / 2).toFixed(1)}" y="${H - 18}" text-anchor="middle">${label}</text>`;
+    // Bin keys are 3-decimal to match the backend's histogram dict keys
+    // exactly (see aggregate.py) -- reformatted to 4 decimals here only
+    // for display, so the tick precision matches the mean-value text
+    // ("mean 0.0058") instead of looking inconsistent (3 vs 4 decimals).
+    const edge = bin.startsWith('>=') ? bin.slice(2) : bin.split('-')[0];
+    const label = (bin.startsWith('>=') ? '>=' : '') + parseFloat(edge).toFixed(4);
+    out += `<text x="${(padL + bi * barW + barW / 2).toFixed(1)}" y="${H - 28}" text-anchor="middle">${label}</text>`;
   });
-  out += `<text x="${(padL + W - padR) / 2}" y="${H - 4}" text-anchor="middle">avg_smoothness of successes</text>`;
+  out += `<text x="${(padL + W - padR) / 2}" y="${H - 6}" text-anchor="middle" class="caption">avg_smoothness of successes (lower = smoother)</text>`;
   svg.innerHTML = out;
 }
 
@@ -379,14 +456,15 @@ function renderIntegrity(snapshot) {
   const allReconcile = versions.every(([, s]) => s.cube_bins_reconcile);
   const allMatch = versions.every(([, s]) => s.success_matches_full_cubes);
   const anyIncomplete = versions.some(([, s]) => s.success_rate_incomplete);
-  const noDupes = (snapshot.duplicate_episode_ids || 0) === 0;
+  const noVerdictConflicts = (snapshot.duplicate_episode_ids || 0) === 0;
+  const noFieldConflicts = (snapshot.conflicting_episode_ids || 0) === 0;
   const hasBaseline = findBaselineKey(snapshot.versions) != null;
   el.innerHTML = `
     <div class="check">
-      <div class="check-title"><span class="${anyIncomplete ? 'warning' : 'good'}">${anyIncomplete ? '!' : '&check;'}</span> Both outcomes loaded</div>
+      <div class="check-title"><span class="${anyIncomplete ? 'warning' : 'good'}">${anyIncomplete ? '!' : '&check;'}</span> Curated-only detection</div>
       <p>${anyIncomplete
-        ? 'At least one version has curated-verdict episodes but zero rejected-verdict episodes &mdash; its success rate is hidden until episodes-rejected is read.'
-        : 'Every version has at least one rejected-verdict episode alongside its curated ones, or carries no curator verdict at all (e.g. controlled eval files).'}</p>
+        ? 'At least one version has curator pass verdicts but zero reject verdicts — its success rate is hidden. This only proves the data is not curated-only; it does not prove every rejected episode was loaded.'
+        : 'No version looks curated-only (pass verdicts with zero rejects), or carries no curator verdict at all (e.g. controlled eval files).'}</p>
     </div>
     <div class="check">
       <div class="check-title"><span class="good">&check;</span> Injected failures excluded</div>
@@ -401,26 +479,19 @@ function renderIntegrity(snapshot) {
       <p>${allMatch ? 'task_success count matches the 3-cube count for every version.' : 'At least one version disagrees between task_success and cubes_placed==3 &mdash; the two signals answer different questions and shouldn’t diverge.'}</p>
     </div>
     <div class="check">
-      <div class="check-title"><span class="${noDupes ? 'good' : 'warning'}">${noDupes ? '&check;' : '!'}</span> Deduplication</div>
-      <p>${noDupes ? 'No episode_id was seen with conflicting verdicts.' : `${snapshot.duplicate_episode_ids} episode_id(s) seen with a different verdict than before &mdash; e.g. present in both curated and rejected.`}</p>
+      <div class="check-title"><span class="${noVerdictConflicts && noFieldConflicts ? 'good' : 'warning'}">${noVerdictConflicts && noFieldConflicts ? '&check;' : '!'}</span> Duplicate handling</div>
+      <p>${noVerdictConflicts && noFieldConflicts
+        ? 'Identical re-lists were ignored; no episode_id conflicts across scored fields.'
+        : [
+            snapshot.conflicting_episode_ids ? `${snapshot.conflicting_episode_ids} episode_id(s) quarantined after conflicting fields (model_version, task_success, cubes_placed, has_failure, or curation_verdict).` : '',
+            snapshot.duplicate_episode_ids ? `${snapshot.duplicate_episode_ids} of those also had conflicting curator verdicts.` : '',
+          ].filter(Boolean).join(' ') || 'Episode conflicts detected.'}</p>
     </div>
     <div class="check">
       <div class="check-title"><span class="${hasBaseline ? 'good' : 'warning'}">${hasBaseline ? '&check;' : '!'}</span> Baseline identified</div>
       <p>${hasBaseline
         ? `Baseline is ${esc(findBaselineKey(snapshot.versions))} (dataset_size = 0).`
         : 'No version is tagged with 0 fine-tune episodes in versions.yaml, so nothing is labeled Baseline. Alphabetical order is not a role.'}</p>
-    </div>
-    <div class="check">
-      <div class="check-title"><span class="warning">!</span> Lineage warning</div>
-      <p>model_version is grouped as-is. Older tags are known to be partially mislabeled and are not corrected here (per the brief, that's a separate relabel effort).</p>
-    </div>
-    <div class="check">
-      <div class="check-title"><span class="good">&check;</span> Replay is stateless</div>
-      <p>${snapshot.episode_count} record(s) currently held in memory, rebuilt from source on every start &mdash; no committed offsets or cache.</p>
-    </div>
-    <div class="check">
-      <div class="check-title"><span class="warning">!</span> Comparable runs (unverified)</div>
-      <p>Same seeds / reset behavior / randomization / episode window can't be checked automatically &mdash; the episode contract carries no seed or reset-mode field yet.</p>
     </div>`;
 }
 
@@ -432,10 +503,10 @@ async function renderEvidenceTable(totalEligible) {
     return;
   }
   const rows = await fetchEpisodes('controlled', versions);
-  const shown = Math.min(rows.length, 30);
+  const scrollHint = rows.length > 10 ? ' · scroll for more' : '';
   document.getElementById('evidence-note').textContent =
-    `Showing ${shown} of ${totalEligible} eligible episodes for the selected policies`;
-  document.getElementById('evidence-body').innerHTML = rows.slice(0, 30).map(r => `
+    `Showing ${rows.length} of ${totalEligible} eligible episodes for the selected policies${scrollHint}`;
+  document.getElementById('evidence-body').innerHTML = rows.map(r => `
     <tr>
       <td>${esc(r.model_version)}</td>
       <td>${esc((r.episode_id || '').slice(0, 8))}</td>
@@ -455,7 +526,7 @@ function renderOperational(stats) {
     return;
   }
   section.hidden = false;
-  document.getElementById('operational-origin').textContent = originLabel(snap.origin);
+  document.getElementById('operational-origin').textContent = originLabel(snap.origin, snap.source_kind);
   const status = document.getElementById('operational-status');
   const parts = [`${snap.episode_count} episode(s) loaded`];
   if (stats.source_mode === 'live') {
@@ -476,7 +547,7 @@ async function render() {
   renderHeader(stats);
   const allSorted = sortedVersions(stats.controlled.versions);
   document.getElementById('controlled-empty').style.display = allSorted.length === 0 ? 'block' : 'none';
-  renderPicker(allSorted);
+  renderPicker(allSorted, stats.controlled.versions);
   const shown = activeSelected();
   renderCards('controlled-cards', stats.controlled.versions, shown);
   renderLearningCurve(stats.controlled.versions);

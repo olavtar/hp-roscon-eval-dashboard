@@ -101,7 +101,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 48px; }
 .model-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; flex-wrap: wrap; }
 .series-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--series); flex-shrink: 0; }
 .model-meta { color: var(--text-muted); font-size: 11px; margin: 4px 0 12px 18px; }
-.model-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; font-weight: 500; color: var(--text-2); }
+.model-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 700; color: var(--text); }
 .badge {
   display: inline-flex; padding: 3px 7px; border-radius: 10px;
   font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
@@ -132,14 +132,40 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 48px; }
 .mini-grid strong { display: block; font-size: 14px; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .no-data { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
 
-.two-col { display: grid; grid-template-columns: 1.12fr 0.88fr; gap: 14px; }
-.two-col .panel { margin-top: 0; }
+/* Uniform columns on every row, on purpose: Learning curve (row 2 left)
+   and Smoothness distribution (row 1 right) both have a bottom-axis
+   caption using the same SVG viewBox width + font-size units, so matching
+   their rendered size requires matching pixel width. A per-row reversed
+   ratio can hit that for one diagonal pair, but then row 1 and row 2 use
+   opposite splits and the grid stops lining up column-to-column. Same
+   ratio everywhere is the only way to get both matched text *and* an
+   aligned grid at once. */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+  align-items: stretch;
+}
+.two-col > .panel {
+  margin-top: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.two-col .panel-body { flex: 1; }
 @media (max-width: 900px) {
   .two-col { grid-template-columns: 1fr; }
 }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-top: 14px; }
-.panel-head { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.panel-head {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  /* Reserve space for a subtitle so cards without one (e.g. Data integrity)
+     still line up with chart cards that have a second line in the header. */
+  min-height: 3.6rem;
+}
 .panel-head h3 { margin: 0; font-size: 13px; }
 .panel-head p { margin: 3px 0 0; color: var(--text-muted); font-size: 11px; }
 .panel-body { padding: 12px 16px 16px; }
@@ -148,12 +174,26 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 48px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 
-.integrity { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-.check { border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; }
+/* Capped + scrollable as a safety net if a future check list grows again;
+   with today's 6 checks this shouldn't engage -- sizing below is tuned to
+   fill the panel's actual height (set by its taller chart sibling) rather
+   than leaving whitespace under a short, cramped list. */
+.integrity {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: 1fr;
+  gap: 10px;
+  height: 100%;
+}
+@media (max-width: 900px) {
+  .integrity { grid-template-columns: 1fr; grid-template-rows: auto; height: auto; }
+}
+.check { border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px; }
+.two-col .check { height: 100%; }
 .check-title { display: flex; gap: 6px; align-items: center; font-weight: 600; font-size: 12px; }
 .check-title .good { color: var(--good); }
 .check-title .warning { color: var(--warning); }
-.check p { margin: 5px 0 0 20px; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
+.check p { margin: 4px 0 0 19px; color: var(--text-2); font-size: 11px; line-height: 1.4; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th {
@@ -166,8 +206,32 @@ td.success { color: var(--good); font-weight: 600; }
 td.failed { color: var(--critical); font-weight: 600; }
 .table-note { color: var(--text-muted); font-size: 11px; padding: 8px 16px 0; }
 
+.evidence-table-wrap {
+  overflow-y: auto;
+  max-height: 22.5rem; /* ~10 rows */
+  border-top: 1px solid var(--border);
+}
+.evidence-table-wrap table { margin: 0; }
+.evidence-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--page);
+}
+
 .chart { width: 100%; height: auto; display: block; }
-.chart text { fill: var(--text-muted); font-size: 10px; }
+/* Baseline for axis ticks/gridline numbers -- secondary ink, not muted:
+   a CSS rule always beats an SVG element's inline fill="..." attribute
+   (the opposite of most HTML styling), so this rule was silently
+   overriding every attempt to emphasize a label with fill="var(--text)"
+   inline. Use the .label class below for anything that needs to stand out. */
+.chart text { fill: var(--text-2); font-size: 11px; }
+.chart .label { fill: var(--text); font-weight: 600; font-size: 13px; }
+.chart .meta { fill: var(--text-2); font-size: 12px; }
+/* Bottom-axis captions share one class so they render at the same size in
+   every chart column (not the default 11px tick size, which looked too
+   small on the smoothness panel's longer label). */
+.chart .caption { fill: var(--text-2); font-size: 13px; }
 .chart .axis { stroke: var(--border-strong); }
 .chart .grid { stroke: var(--border); }
 

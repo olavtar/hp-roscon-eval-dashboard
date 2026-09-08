@@ -98,15 +98,9 @@ class VersionStats:
 
     @property
     def success_rate_incomplete(self) -> bool:
-        """True when every episode we've seen for this version carries a
-        curator "pass" verdict and none carry "reject" -- the signature of
-        having only curated (Kafka/MinIO episodes-curated) data loaded, with
-        episodes-rejected never having been read. The curator gates hard on
-        task_success, so a curated-only population is ~100% success *by
-        construction*, not because the policy is actually that good. Records
-        with no verdict at all (e.g. controlled eval files, which aren't
-        curator output) don't trip this -- there's nothing to be incomplete
-        relative to."""
+        """Curated-only detection: every episode has a curator pass verdict and
+        none have reject. Proves the loaded slice is not pass-only; does NOT
+        prove every rejected episode in the bucket was loaded."""
         pass_n = self.verdict_counts.get("pass", 0)
         reject_n = self.verdict_counts.get("reject", 0)
         return pass_n > 0 and reject_n == 0
