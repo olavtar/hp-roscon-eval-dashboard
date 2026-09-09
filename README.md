@@ -115,7 +115,8 @@ EVAL_DIR=/path/to/phase3-ladder ./run.sh live
 
 1. Tailscale connected; cluster node `10.0.0.49` reachable
 2. NodePorts: MinIO `30900`, Kafka `30903`
-3. `.env.local` with read-only MinIO credentials (never commit):
+3. `.env.local` with read-only MinIO credentials (never commit — copy
+   `.env.local.example` and fill in real values):
 
    ```
    S3_ACCESS_KEY=<your scoped read-only access key>
