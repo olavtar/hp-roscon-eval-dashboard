@@ -1,15 +1,14 @@
-"""Entrypoint: wires configured sources to two independent in-memory panels
-and a read-only Flask API/UI.
+"""Entrypoint: wires a configured source to one in-memory population and a
+read-only Flask API/UI.
 
-Two panels, deliberately not conflated:
+One view, per `model_version`, fed by whichever source is active:
 
-- "controlled" -- EVAL_DIR eval-harness files (controlled evaluation), or
-  RECORDS_DIR alone when no EVAL_DIR exists (saved-file comparison only).
-- "operational" -- live flywheel curated+rejected population (Tailscale or a
-  separate RECORDS_DIR export). Hidden in the UI when empty.
+- SOURCE_MODE=files -- a directory of episode JSON records (RECORDS_DIR).
+- SOURCE_MODE=live -- Kafka+MinIO curated episodes, merged with the MinIO
+  rejected bucket (Kafka never notifies for rejects).
 
-Neither panel persists anything of its own: both are rebuilt from their
-source(s) on every process start.
+Persists nothing of its own: rebuilt from source on every process start, so
+a restart or a fresh file-directory replay reproduces the same numbers.
 """
 from __future__ import annotations
 
@@ -40,14 +39,13 @@ class Store:
     excluded from aggregates. Injected demo failures (`has_failure`) are
     dropped before aggregate.py sees them."""
 
-    def __init__(self, version_meta: dict[str, dict] | None = None, origin: str = "", source_kind: str | None = None):
+    def __init__(self, version_meta: dict[str, dict] | None = None, origin: str = ""):
         self._lock = threading.Lock()
         self._by_id: dict[str, dict] = {}
         self._dropped_failure_ids: set[str] = set()
         self._quarantined: set[str] = set()
         self._version_meta = version_meta or {}
         self.origin = origin
-        self.source_kind = source_kind
         self.dropped_has_failure = 0
         self.dropped_invalid = 0
         self.duplicate_episode_ids = 0
@@ -138,7 +136,6 @@ class Store:
             }
         return {
             "origin": origin,
-            "source_kind": self.source_kind,
             "episode_count": len(records),
             "dropped_has_failure": dropped,
             "dropped_invalid": self.dropped_invalid,
@@ -146,7 +143,6 @@ class Store:
             "conflicting_episode_ids": self.conflicting_episode_ids,
             "rejected_last_checked": rejected_last_checked,
             "smoothness_bin_edges": aggregate.SMOOTHNESS_BINS,
-            "eval_metadata": schema.summarize_eval_metadata(records),
             "versions": versions,
         }
 
@@ -169,41 +165,6 @@ def load_version_meta(path: str) -> dict[str, dict]:
     return meta
 
 
-def file_panel_dirs(records_dir: str, eval_dir: str) -> dict[str, str | None]:
-    """File-mode routing:
-
-    - EVAL_DIR → controlled evaluation (primary comparison)
-    - RECORDS_DIR → operational export/replay when EVAL_DIR is also present
-      and points at a different tree
-    - RECORDS_DIR only (no EVAL_DIR) → saved-file comparison panel; not
-      labeled controlled evaluation because the dashboard cannot prove those
-      runs used the fixed eval harness
-    """
-    rec = pathlib.Path(records_dir)
-    ev = pathlib.Path(eval_dir)
-    rec_ok, ev_ok = rec.exists(), ev.exists()
-
-    controlled = None
-    operational = None
-    controlled_kind = None
-
-    if ev_ok:
-        controlled = str(ev.resolve())
-        controlled_kind = "eval"
-    elif rec_ok:
-        controlled = str(rec.resolve())
-        controlled_kind = "saved-files"
-
-    if rec_ok and ev_ok and rec.resolve() != ev.resolve():
-        operational = str(rec.resolve())
-
-    return {
-        "controlled": controlled,
-        "operational": operational,
-        "controlled_kind": controlled_kind,
-    }
-
-
 def watch_files(store: Store, directory: str, transform=lambda records: records) -> None:
     interval = float(os.environ.get("FILE_POLL_SECONDS", "5"))
     if interval <= 0:
@@ -220,13 +181,11 @@ def watch_files(store: Store, directory: str, transform=lambda records: records)
     threading.Thread(target=loop, daemon=True, name=f"watch:{directory}").start()
 
 
-def run_live(operational: Store) -> None:
-    """Feeds the *operational* panel only. `schema.apply_lineage_rules` is
-    applied to every path here (initial listing, the rejected-bucket poll,
-    and each Kafka-triggered fetch) -- it's the client-side guard against
-    the eval-* contamination sitting in Kafka's append-only history, and
-    the pre-teacher lineage grouping. Never applied to the controlled panel,
-    which legitimately uses eval-*-tagged eval-harness files."""
+def run_live(store: Store) -> None:
+    """`schema.apply_lineage_rules` is applied to every path here (initial
+    listing, the rejected-bucket poll, and each Kafka-triggered fetch) --
+    the client-side guard against eval-* contamination sitting in Kafka's
+    append-only history, and the pre-teacher lineage grouping."""
     minio = MinioSource(
         endpoint=os.environ["S3_ENDPOINT"],
         access_key=os.environ["S3_ACCESS_KEY"],
@@ -235,25 +194,24 @@ def run_live(operational: Store) -> None:
     curated_bucket = os.environ.get("S3_CURATED_BUCKET", "episodes-curated")
     rejected_bucket = os.environ.get("S3_REJECTED_BUCKET", "episodes-rejected")
 
-    log.info("seeding operational panel from %s + %s", curated_bucket, rejected_bucket)
-    operational.merge(schema.apply_lineage_rules(minio.list_bucket(curated_bucket)))
-    operational.merge(schema.apply_lineage_rules(minio.list_bucket(rejected_bucket)))
-    operational.rejected_last_checked = time.time()
-    operational.origin = "live:kafka+minio"
+    log.info("seeding from %s + %s", curated_bucket, rejected_bucket)
+    store.merge(schema.apply_lineage_rules(minio.list_bucket(curated_bucket)))
+    store.merge(schema.apply_lineage_rules(minio.list_bucket(rejected_bucket)))
+    store.rejected_last_checked = time.time()
 
     def poll_rejected() -> None:
         # Rejected episodes never get a Kafka notification (only sync-agent
         # publishes, and only for curation passes), so this is the only way
-        # the operational panel ever sees them after startup. The mirror job
-        # that populates episodes-rejected runs every 5 minutes upstream, so
-        # a 30s poll here is frequent enough not to be the bottleneck -- the
+        # the store ever sees them after startup. The mirror job that
+        # populates episodes-rejected runs every 5 minutes upstream, so a
+        # 30s poll here is frequent enough not to be the bottleneck -- the
         # UI surfaces `rejected_last_checked` so a stale success rate is
         # visible rather than silently trusted.
         while True:
             time.sleep(REJECTED_POLL_SECONDS)
             try:
-                operational.merge(schema.apply_lineage_rules(minio.list_bucket(rejected_bucket)))
-                operational.rejected_last_checked = time.time()
+                store.merge(schema.apply_lineage_rules(minio.list_bucket(rejected_bucket)))
+                store.rejected_last_checked = time.time()
             except Exception:
                 log.exception("episodes-rejected poll failed")
 
@@ -274,51 +232,32 @@ def run_live(operational: Store) -> None:
                 log.exception("failed to resolve %s from MinIO", s3_uri)
                 continue
             if record:
-                operational.merge(schema.apply_lineage_rules([record]))
+                store.merge(schema.apply_lineage_rules([record]))
 
     threading.Thread(target=consume_kafka, daemon=True).start()
 
 
 def main() -> None:
     version_meta = load_version_meta(os.environ.get("VERSIONS_FILE", "config/versions.yaml"))
-    operational = Store(version_meta)
-    controlled = Store(version_meta)
+    store = Store(version_meta)
 
     source_mode = os.environ.get("SOURCE_MODE", "files")
     records_dir = os.environ.get("RECORDS_DIR", "/records")
-    eval_dir = os.environ.get("EVAL_DIR", "/data/eval")
 
     if source_mode == "live":
-        operational.source_kind = "operational"
-        operational.origin = "live:kafka+minio"
-        run_live(operational)
-        if pathlib.Path(eval_dir).exists():
-            controlled.source_kind = "eval"
-            controlled.origin = f"controlled-eval:{pathlib.Path(eval_dir).resolve()}"
-            controlled.replace(FileSource(eval_dir).read())
-            watch_files(controlled, eval_dir)
-        else:
-            log.info("no EVAL_DIR at %s -- controlled panel will be empty", eval_dir)
+        store.origin = "live:kafka+minio"
+        run_live(store)
     elif source_mode == "files":
-        dirs = file_panel_dirs(records_dir, eval_dir)
-        if dirs["controlled"]:
-            kind = dirs["controlled_kind"]
-            controlled.source_kind = kind
-            prefix = "controlled-eval" if kind == "eval" else "saved-files"
-            controlled.origin = f"{prefix}:{dirs['controlled']}"
-            controlled.replace(FileSource(dirs["controlled"]).read())
-            watch_files(controlled, dirs["controlled"])
+        if pathlib.Path(records_dir).exists():
+            store.origin = f"files:{pathlib.Path(records_dir).resolve()}"
+            store.replace(schema.apply_lineage_rules(FileSource(records_dir).read()))
+            watch_files(store, records_dir, transform=schema.apply_lineage_rules)
         else:
-            log.info("no episode files at RECORDS_DIR=%s or EVAL_DIR=%s", records_dir, eval_dir)
-        if dirs["operational"]:
-            operational.source_kind = "operational"
-            operational.origin = f"operational-replay:{dirs['operational']}"
-            operational.replace(schema.apply_lineage_rules(FileSource(dirs["operational"]).read()))
-            watch_files(operational, dirs["operational"], transform=schema.apply_lineage_rules)
+            log.info("no episode files at RECORDS_DIR=%s", records_dir)
     else:
         raise ValueError(f"Unknown SOURCE_MODE={source_mode!r}, expected live|files")
 
-    app = create_app(operational, controlled, source_mode)
+    app = create_app(store, source_mode)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
 
 

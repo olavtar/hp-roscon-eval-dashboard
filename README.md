@@ -2,9 +2,9 @@
 
 Read-only dashboard for the
 [hp-roscon-flywheel](https://github.com/RHPhysicalAI/hp-roscon-flywheel) demo.
-Surfaces **observed** policy outcomes per `model_version` — controlled-evaluation
-success rate (with Wilson confidence intervals) as the primary metric, and mean
-smoothness among successful episodes as a secondary signal.
+Surfaces **observed** policy outcomes per `model_version` — success rate (with
+Wilson confidence intervals) as the primary metric, and mean smoothness among
+successful episodes as a secondary signal.
 
 It does **not** prove one policy is statistically better than another. The UI
 uses conservative language: “higher observed success rate,” not “better.”
@@ -12,38 +12,31 @@ uses conservative language: “higher observed success rate,” not “better.�
 Runs on your machine. Live mode connects to Kafka and MinIO over Tailscale.
 Never writes to Kafka, MinIO, or the sim.
 
-## What it compares
+## What it shows
+
+One view, per `model_version`, fed by whichever source is active — a
+directory of files, or Kafka+MinIO — so file replay and live mode produce
+identical numbers for the same underlying records:
 
 | Role | Metric | Compare against |
 |---|---|---|
-| Primary | Controlled-evaluation success rate | Baseline (0 curated fine-tune episodes) and the previous dataset-size rung |
+| Primary | Success rate | Baseline (0 curated fine-tune episodes) and the previous dataset-size rung |
 | Secondary | Smoothness of successes (lower = smoother) | Selected policies — relative ranking only |
 
-## Two panels
+Pick up to three versions (Policy A/B/C) to see them side by side in the
+cards, the cube-placement chart, and the smoothness histogram.
 
-The dashboard keeps controlled evaluation and live flywheel data separate. They
-use the same aggregation logic, so file replay and live mode produce identical
-numbers for the same underlying records.
+## Sources
 
-| Source | Panel | Meaning |
+| `SOURCE_MODE` | Reads from | Notes |
 |---|---|---|
-| `EVAL_DIR` | Controlled evaluation | Fixed-seed eval-harness ladder (0 / 20 / 40 / 80 / 160 curated fine-tune episodes per rung). File-based only — not in Kafka/MinIO yet. |
-| `RECORDS_DIR` (with a different `EVAL_DIR`) | Operational replay | Curated + rejected export from the live flywheel. In live mode this comes from Tailscale instead. |
-| `RECORDS_DIR` alone | Saved-file comparison | Fills the comparison UI from saved episode files, but is **not** labeled controlled evaluation — those runs are not verified as fixed-seed harness output. |
+| `files` (default) | A directory of episode JSON records (`RECORDS_DIR`) | The booth/offline mode — no Kafka or MinIO needed |
+| `live` | Kafka (`episode-manifests`) + MinIO (`episodes-curated`), merged with the MinIO `episodes-rejected` bucket | Rejected episodes never get a Kafka notification, so they're polled separately every 30s |
 
-### `EVAL_DIR` layout
-
-`EVAL_DIR` accepts the eval-harness JSON format — one object per file with
-`model_version`, `eval_config`, `aggregate`, and `episodes` (one file per rung)
-— as well as plain arrays of episode records. Additional seed batches use the
-filename pattern `<model_version>-s<seed>.json` (for example,
-`eval-teacher-v1-s1050.json`); those files merge into the named `model_version`,
-not as separate policies.
-
-> **Controlled vs operational:** These numbers are expected to disagree.
-> Controlled eval resets the arm each episode; the live flywheel does not, so
-> failures cascade. The documented controlled baseline is **73% (73/100)**;
-> operational replay over the same period can read much lower. Neither is wrong.
+Success rate needs both curated *and* rejected episodes in the denominator —
+a curated-only population reads ~100% by construction, since the curator
+gates hard on `task_success`. This is the single most important thing the
+dashboard gets right; see "Success rate" below.
 
 ## Success rate
 
@@ -75,39 +68,30 @@ The UI runs automated checks before you trust the numbers:
 - Cube-placement buckets reconcile to episode count
 - `task_success` agrees with 3-cube count
 - Duplicate `episode_id`s: identical re-lists ignored; conflicts quarantined
-- Eval-harness seed/scene/reset metadata surfaced when present
 - Baseline version identified from config (`dataset_size: 0`)
-
-Seed, scene, and reset metadata is displayed when present. When it is missing,
-run comparability cannot be verified.
 
 ## How it works
 
-- **No persisted state** — rebuilt from sources on every start.
+- **No persisted state** — rebuilt from source on every start.
 - **Kafka notifies, MinIO is authoritative** — rejected episodes are polled
   separately because they lack Kafka notifications. Rejected-bucket mirror lag
-  (~5 min upstream) means operational numbers can be stale; the UI shows last
-  check time.
-- **Operational lineage rules** (not applied to controlled eval): drop leaked
-  `eval-*` tags; group the legacy Phase-2 tags `soarm-act-10ep-10k` and
-  `soarm-act-v1` as `pre-teacher`.
+  (~5 min upstream) means the numbers can be stale; the UI shows last check time.
+- **Lineage rules, applied on every path**: drop leaked `eval-*` tags (a
+  2026-09-08 bug let eval-harness test runs leak into production Kafka/MinIO);
+  group the legacy Phase-2 tags `soarm-act-10ep-10k` and `soarm-act-v1` as
+  `pre-teacher`.
 - **Conflicting duplicates are quarantined**, not silently overwritten.
 
 ## Run it
 
 ```bash
-./run.sh files   # offline — saved-file comparison from bundled test data by default
+./run.sh files   # offline — reads RECORDS_DIR (bundled test fixtures by default)
 ./run.sh live    # Tailscale + Kafka/MinIO — needs .env.local with read-only S3 keys
 ```
 
 Uses podman when available, otherwise docker (`CONTAINER=` to override). Opens
 [http://localhost:8080](http://localhost:8080) by default (`PORT=` to override).
 No in-app mode switch — restart with the other command.
-
-```bash
-# Controlled-eval ladder with live operational data:
-EVAL_DIR=/path/to/phase3-ladder ./run.sh live
-```
 
 `./run.sh` with no args lists environment overrides.
 

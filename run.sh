@@ -5,11 +5,10 @@ usage() {
   cat >&2 <<'EOF'
 Usage: ./run.sh <files|live> [extra container run args...]
 
-  files   Offline mode. Default: saved-file comparison from bundled test data.
-          Set EVAL_DIR to mount controlled-eval records.
+  files   Offline mode. Reads RECORDS_DIR (default: bundled test fixtures).
   live    Kafka + MinIO over Tailscale. Needs .env.local with S3 credentials.
 
-Common env: PORT, CONTAINER, RECORDS_DIR, EVAL_DIR, VERSIONS_FILE, LIVE_DASHBOARD_URL
+Common env: PORT, CONTAINER, RECORDS_DIR, VERSIONS_FILE, LIVE_DASHBOARD_URL
 Live only:  S3_ENDPOINT, S3_*_BUCKET, KAFKA_BOOTSTRAP, KAFKA_TOPIC
 EOF
   exit 1
@@ -36,7 +35,13 @@ fi
 
 "$CONTAINER" build -t "$IMAGE" "$ROOT" >&2
 
-args=(--rm -p "$PORT:8080")
+# Fixed name so switching modes (or re-running the same one) doesn't need a
+# manual `podman ps` / `podman stop` first -- only one instance of this
+# dashboard ever runs at a time, so replacing it outright is correct.
+NAME=evaluation-dashboard
+"$CONTAINER" rm -f "$NAME" >/dev/null 2>&1 || true
+
+args=(--rm --name "$NAME" -p "$PORT:8080")
 if [ -f "$ROOT/config/versions.yaml" ]; then
   args+=(-v "$ROOT/config/versions.yaml:/app/config/versions.yaml:ro")
 fi
@@ -46,20 +51,13 @@ args+=(-e LIVE_DASHBOARD_URL="${LIVE_DASHBOARD_URL:-http://10.0.0.49:30801}")
 
 if [ "$MODE" = "files" ]; then
   RECORDS_DIR="${RECORDS_DIR:-$ROOT/tests/fixtures}"
-  EVAL_DIR="${EVAL_DIR:-}"
   args+=(-v "$RECORDS_DIR:/records:ro" -e SOURCE_MODE=files)
-  if [ -n "$EVAL_DIR" ]; then
-    args+=(-v "$EVAL_DIR:/data/eval:ro")
-  fi
 else
   if [ ! -f "$ROOT/.env.local" ]; then
     echo "error: live mode needs $ROOT/.env.local with S3_ACCESS_KEY and S3_SECRET_KEY" >&2
     exit 1
   fi
   args+=(--env-file "$ROOT/.env.local")
-  if [ -n "${EVAL_DIR:-}" ]; then
-    args+=(-v "$EVAL_DIR:/data/eval:ro")
-  fi
   args+=(
     -e SOURCE_MODE=live
     -e S3_ENDPOINT="${S3_ENDPOINT:-http://10.0.0.49:30900}"

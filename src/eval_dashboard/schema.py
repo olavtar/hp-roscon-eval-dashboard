@@ -86,9 +86,6 @@ def normalize(record: dict) -> dict | None:
         "timestamp": record.get("timestamp"),
         "curation_verdict": record.get("curation_verdict"),
         "rollout_steps": (record.get("rollout") or {}).get("steps") if isinstance(record.get("rollout"), dict) else record.get("rollout_steps"),
-        "eval_seed": record.get("eval_seed"),
-        "eval_scene": record.get("eval_scene"),
-        "eval_reset_mode": record.get("eval_reset_mode"),
     }
     if record.get("raw_model_version"):
         normalized["raw_model_version"] = record["raw_model_version"]
@@ -103,9 +100,7 @@ LEGACY_PRE_TEACHER_VERSIONS = {"soarm-act-10ep-10k", "soarm-act-v1"}
 
 
 def apply_lineage_rules(records):
-    """Operational-population-only rules -- never applied to the controlled
-    (eval-harness) panel, which legitimately uses `eval-`-prefixed
-    model_version tags as its own labeling scheme.
+    """Applied to every record on every path (file replay and live).
 
     - Drops any model_version starting with "eval-": a 2026-09-08 bug let
       eval-harness test runs leak into production MinIO/Kafka. MinIO was
@@ -125,20 +120,3 @@ def apply_lineage_rules(records):
         if mv in LEGACY_PRE_TEACHER_VERSIONS:
             r = {**r, "model_version": "pre-teacher", "raw_model_version": mv}
         yield r
-
-
-def summarize_eval_metadata(records: list[dict]) -> dict:
-    """Harness-derived seed/scene metadata when present on controlled-eval files."""
-    with_meta = [r for r in records if r.get("eval_seed") is not None]
-    if not with_meta:
-        return {"present": False}
-    scenes = {r.get("eval_scene") for r in with_meta if r.get("eval_scene")}
-    reset_modes = {r.get("eval_reset_mode") for r in with_meta if r.get("eval_reset_mode")}
-    return {
-        "present": True,
-        "episode_count": len(with_meta),
-        "unique_seed_count": len({r.get("eval_seed") for r in with_meta}),
-        "scene_consistent": len(scenes) <= 1,
-        "scenes": sorted(scenes),
-        "reset_modes": sorted(reset_modes),
-    }

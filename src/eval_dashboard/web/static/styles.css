@@ -204,11 +204,17 @@ th {
 td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 td.success { color: var(--good); font-weight: 600; }
 td.failed { color: var(--critical); font-weight: 600; }
-.table-note { color: var(--text-muted); font-size: 11px; padding: 8px 16px 0; }
+.table-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 8px 16px 12px;
+  margin-bottom: 4px;
+}
 
 .evidence-table-wrap {
   overflow-y: auto;
-  max-height: 22.5rem; /* ~10 rows */
+  max-height: 12.25rem; /* header + ~5 rows */
   border-top: 1px solid var(--border);
 }
 .evidence-table-wrap table { margin: 0; }

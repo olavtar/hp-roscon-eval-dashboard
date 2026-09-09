@@ -1,11 +1,11 @@
 const SERIES_VARS = ['--series-1', '--series-2', '--series-3'];
-const MAX_SELECTED = 3;
 const REFRESH_MS = 5000;
 const POLICY_LABELS = ['Policy A', 'Policy B', 'Policy C'];
 
-let selected = ['', '', ''];
-let lastPickerKey = '';
+function makeSelectionState() { return { selected: ['', '', ''], lastKey: '' }; }
+const selection = makeSelectionState();
 let lastStats = null;
+let renderGeneration = 0;
 
 function esc(s) {
   return String(s).replace(/[&<>"'`]/g, c => ({
@@ -28,8 +28,8 @@ function sortedVersions(versionsObj) {
   }).map(([name]) => name);
 }
 
-function activeSelected() {
-  return selected.filter(Boolean);
+function activeSelected(state) {
+  return state.selected.filter(Boolean);
 }
 
 function colorSlotFor(version, versionList) {
@@ -56,6 +56,12 @@ function roleFor(s, isBaseline) {
   return { badge: 'untagged', label: 'Unmapped', meta: 'No training-set size yet — not labeled baseline or fine-tune' };
 }
 
+function finetuneEpisodesLabel(datasetSize) {
+  if (datasetSize == null) return '—';
+  if (datasetSize === 0) return '0 (baseline)';
+  return String(datasetSize);
+}
+
 function pct(x) { return x == null ? '--' : (x * 100).toFixed(0) + '%'; }
 
 function ciSentence(s) {
@@ -72,20 +78,11 @@ function niceTicks(maxCount, targetLines = 4) {
 }
 function fmtNum(x, d = 4) { return x == null ? '--' : x.toFixed(d); }
 
-function originLabel(origin, sourceKind) {
+function originLabel(origin) {
   if (!origin) return '';
-  if (origin.startsWith('controlled-eval:')) return 'Controlled eval · ' + origin.slice('controlled-eval:'.length);
-  if (origin.startsWith('saved-files:')) return 'Saved-file comparison · ' + origin.slice('saved-files:'.length);
-  if (origin.startsWith('operational-replay:')) return 'Operational replay · ' + origin.slice('operational-replay:'.length);
   if (origin.startsWith('files:')) return origin.slice(6);
   if (origin.startsWith('live')) return 'Kafka + MinIO';
   return origin;
-}
-
-function controlledPanelTitle(sourceKind) {
-  if (sourceKind === 'eval') return 'Controlled evaluation';
-  if (sourceKind === 'saved-files') return 'Saved-file comparison';
-  return 'Success comparison';
 }
 
 async function fetchStats() {
@@ -93,9 +90,9 @@ async function fetchStats() {
   return r.json();
 }
 
-async function fetchEpisodes(panel, versions) {
+async function fetchEpisodes(versions) {
   const results = await Promise.all(
-    versions.map(v => fetch(`/api/episodes?panel=${panel}&model_version=${encodeURIComponent(v)}&limit=200`).then(r => r.json()))
+    versions.map(v => fetch(`/api/episodes?model_version=${encodeURIComponent(v)}&limit=200`).then(r => r.json()))
   );
   return results.flat().sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 }
@@ -106,36 +103,25 @@ function renderHeader(stats) {
   document.getElementById('loaded-chip').textContent = 'Loaded ' + new Date().toLocaleTimeString();
   const back = document.getElementById('backlink');
   back.href = stats.live_dashboard_url;
-  document.getElementById('controlled-origin').textContent = originLabel(stats.controlled.origin, stats.controlled.source_kind);
-  const heading = document.querySelector('.section-heading h2');
-  if (heading) heading.textContent = controlledPanelTitle(stats.controlled.source_kind);
-  const subtitle = document.getElementById('controlled-subtitle');
-  if (subtitle) {
-    const kind = stats.controlled.source_kind;
-    subtitle.textContent = kind === 'eval'
-      ? 'Primary metric: controlled-eval success rate · compare to baseline and previous dataset-size rung'
-      : kind === 'saved-files'
-        ? 'Observed success rates from saved files — not verified as controlled evaluation'
-        : 'All three cubes placed · injected failures excluded';
-  }
+  document.getElementById('origin-label').textContent = originLabel(stats.snapshot.origin);
 }
 
-function renderPicker(allVersions, versionsObj) {
-  const el = document.getElementById('controlled-picker');
+function renderPicker(elId, allVersions, versionsObj, state) {
+  const el = document.getElementById(elId);
   if (allVersions.length === 0) {
     el.innerHTML = '';
-    lastPickerKey = '';
-    selected = ['', '', ''];
+    state.lastKey = '';
+    state.selected = ['', '', ''];
     return;
   }
-  if (!selected.some(Boolean)) {
-    selected = [allVersions[0] || '', allVersions[1] || '', allVersions[2] || ''];
+  if (!state.selected.some(Boolean)) {
+    state.selected = [allVersions[0] || '', allVersions[1] || '', allVersions[2] || ''];
   } else {
-    selected = selected.map(v => (v && allVersions.includes(v)) ? v : '');
+    state.selected = state.selected.map(v => (v && allVersions.includes(v)) ? v : '');
   }
-  const key = allVersions.join('\0') + '|' + selected.join('\0');
-  if (key === lastPickerKey) return;
-  lastPickerKey = key;
+  const key = allVersions.join('\0') + '|' + state.selected.join('\0');
+  if (key === state.lastKey) return;
+  state.lastKey = key;
 
   // Group by `parent` (config/versions.yaml) so e.g. four independent
   // fine-tunes of the same baseline show up nested under it via a native
@@ -166,13 +152,13 @@ function renderPicker(allVersions, versionsObj) {
 
   el.innerHTML = POLICY_LABELS.map((label, i) => {
     const elsewhere = {};
-    selected.forEach((v, j) => { if (v && j !== i) elsewhere[v] = POLICY_LABELS[j]; });
+    state.selected.forEach((v, j) => { if (v && j !== i) elsewhere[v] = POLICY_LABELS[j]; });
     let opts = '<option value="">—</option>';
     topLevel.forEach(v => {
-      opts += optionTag(v, selected[i], elsewhere[v]);
+      opts += optionTag(v, state.selected[i], elsewhere[v]);
       if (childrenOf[v]) {
         opts += `<optgroup label="↳ fine-tuned from ${esc(v)}">`;
-        childrenOf[v].forEach(c => { opts += optionTag(c, selected[i], elsewhere[c]); });
+        childrenOf[v].forEach(c => { opts += optionTag(c, state.selected[i], elsewhere[c]); });
         opts += '</optgroup>';
       }
     });
@@ -182,16 +168,21 @@ function renderPicker(allVersions, versionsObj) {
     sel.addEventListener('change', () => {
       const slot = +sel.dataset.slot;
       const newValue = sel.value;
-      const previousValue = selected[slot];
+      const previousValue = state.selected[slot];
       if (newValue) {
         // Picking a version that's already in another slot swaps the two
         // slots instead of being blocked -- lets you reorder Policy A/B/C
         // by just picking directly, no need to clear one first.
-        const conflictSlot = selected.findIndex((v, j) => j !== slot && v === newValue);
-        if (conflictSlot !== -1) selected[conflictSlot] = previousValue;
+        const conflictSlot = state.selected.findIndex((v, j) => j !== slot && v === newValue);
+        if (conflictSlot !== -1) state.selected[conflictSlot] = previousValue;
       }
-      selected[slot] = newValue;
-      lastPickerKey = '';
+      state.selected[slot] = newValue;
+      state.lastKey = '';
+      // Repaint from cached stats immediately — render() only updates after fetchStats().
+      if (lastStats) {
+        const totalEligible = renderViews(lastStats);
+        void renderEvidenceTable(lastStats.snapshot.versions, totalEligible, renderGeneration);
+      }
       render();
     });
   });
@@ -318,7 +309,7 @@ function renderLearningCurve(versionsObj) {
     const [lo, hi] = s.success_ci || [null, null];
     if (lo == null || hi == null) return '';
     const cx = x(s.dataset_size);
-    const color = seriesColor(Math.max(0, colorSlotFor(v, activeSelected())));
+    const color = seriesColor(Math.max(0, colorSlotFor(v, activeSelected(selection))));
     const yHi = y(hi).toFixed(1), yLo = y(lo).toFixed(1);
     return `
       <line x1="${cx.toFixed(1)}" y1="${yHi}" x2="${cx.toFixed(1)}" y2="${yLo}" stroke="${color}" stroke-width="1.5" opacity="0.5"/>
@@ -326,7 +317,7 @@ function renderLearningCurve(versionsObj) {
       <line x1="${(cx - 4).toFixed(1)}" y1="${yLo}" x2="${(cx + 4).toFixed(1)}" y2="${yLo}" stroke="${color}" opacity="0.5"/>`;
   }).join('');
   const dots = points.map(([v, s]) => {
-    const color = seriesColor(Math.max(0, colorSlotFor(v, activeSelected())));
+    const color = seriesColor(Math.max(0, colorSlotFor(v, activeSelected(selection))));
     return `
     <circle cx="${x(s.dataset_size).toFixed(1)}" cy="${y(s.success_rate).toFixed(1)}" r="5" fill="${color}"><title>${esc(v)}: ${pct(s.success_rate)} (n=${s.episode_count})</title></circle>
     <text x="${x(s.dataset_size).toFixed(1)}" y="${(y(s.success_rate) - 12).toFixed(1)}" text-anchor="middle" class="label">${pct(s.success_rate)}</text>
@@ -341,9 +332,9 @@ function renderLearningCurve(versionsObj) {
     `<text x="${(padL + W - padR) / 2}" y="${H - 4}" text-anchor="middle" class="caption">Curated fine-tune episodes</text>`;
 }
 
-function renderCubesChart(versionsObj, versionList) {
-  const svg = document.getElementById('cubes-chart');
-  const legend = document.getElementById('cubes-legend');
+function renderCubesChart(chartId, legendId, versionsObj, versionList) {
+  const svg = document.getElementById(chartId);
+  const legend = document.getElementById(legendId);
   if (versionList.length === 0) { svg.innerHTML = ''; legend.innerHTML = ''; return; }
   const W = 720, H = 260, padL = 50, padR = 20, padT = 20, padB = 40;
   const buckets = [0, 1, 2, 3];
@@ -396,8 +387,8 @@ function xForSmoothness(value, edges, padL, barW) {
   return padL + (edges.length - 1) * barW;
 }
 
-function renderSmoothnessChart(snapshot, versionList) {
-  const svg = document.getElementById('smoothness-chart');
+function renderSmoothnessChart(chartId, snapshot, versionList) {
+  const svg = document.getElementById(chartId);
   const versionsObj = snapshot.versions || {};
   if (versionList.length === 0) { svg.innerHTML = ''; return; }
   const edges = snapshot.smoothness_bin_edges || [];
@@ -464,7 +455,7 @@ function renderIntegrity(snapshot) {
       <div class="check-title"><span class="${anyIncomplete ? 'warning' : 'good'}">${anyIncomplete ? '!' : '&check;'}</span> Curated-only detection</div>
       <p>${anyIncomplete
         ? 'At least one version has curator pass verdicts but zero reject verdicts — its success rate is hidden. This only proves the data is not curated-only; it does not prove every rejected episode was loaded.'
-        : 'No version looks curated-only (pass verdicts with zero rejects), or carries no curator verdict at all (e.g. controlled eval files).'}</p>
+        : 'No version looks curated-only (pass verdicts with zero rejects), or carries no curator verdict at all.'}</p>
     </div>
     <div class="check">
       <div class="check-title"><span class="good">&check;</span> Injected failures excluded</div>
@@ -495,72 +486,70 @@ function renderIntegrity(snapshot) {
     </div>`;
 }
 
-async function renderEvidenceTable(totalEligible) {
-  const versions = activeSelected();
+async function renderEvidenceTable(versionsObj, totalEligible, generation) {
+  const versions = activeSelected(selection);
   if (versions.length === 0) {
     document.getElementById('evidence-body').innerHTML = '';
     document.getElementById('evidence-note').textContent = '';
     return;
   }
-  const rows = await fetchEpisodes('controlled', versions);
-  const scrollHint = rows.length > 10 ? ' · scroll for more' : '';
+  const rows = await fetchEpisodes(versions);
+  if (generation !== renderGeneration) return;
+  const scrollHint = rows.length > 5 ? ' · scroll for more' : '';
   document.getElementById('evidence-note').textContent =
     `Showing ${rows.length} of ${totalEligible} eligible episodes for the selected policies${scrollHint}`;
-  document.getElementById('evidence-body').innerHTML = rows.map(r => `
+  document.getElementById('evidence-body').innerHTML = rows.map(r => {
+    const finetune = finetuneEpisodesLabel((versionsObj[r.model_version] || {}).dataset_size);
+    return `
     <tr>
       <td>${esc(r.model_version)}</td>
+      <td>${esc(finetune)}</td>
       <td>${esc((r.episode_id || '').slice(0, 8))}</td>
       <td class="${r.task_success ? 'success' : 'failed'}">${r.task_success ? '✓ Success' : '× Failed'}</td>
       <td>${r.cubes_placed != null ? r.cubes_placed + ' / 3' : '--'}</td>
       <td>${fmtNum(r.avg_smoothness)}${r.task_success ? '' : ' (fail, excluded from mean)'}</td>
       <td>${r.rollout_steps != null ? r.rollout_steps : '--'}</td>
       <td>${esc(r.timestamp || '--')}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
-function renderOperational(stats) {
-  const section = document.getElementById('operational-section');
-  const snap = stats.operational;
-  if (!snap.episode_count) {
-    section.hidden = true;
-    return;
-  }
-  section.hidden = false;
-  document.getElementById('operational-origin').textContent = originLabel(snap.origin, snap.source_kind);
-  const status = document.getElementById('operational-status');
-  const parts = [`${snap.episode_count} episode(s) loaded`];
+function renderViews(stats) {
+  renderHeader(stats);
+  const snap = stats.snapshot;
+
+  const status = document.getElementById('status-line');
+  const versionCount = Object.keys(snap.versions).length;
+  const parts = snap.episode_count
+    ? [`${snap.episode_count} episode(s) loaded across ${versionCount} version(s)`]
+    : [];
   if (stats.source_mode === 'live') {
     parts.push(snap.rejected_last_checked
       ? `Rejected records last checked ${new Date(snap.rejected_last_checked * 1000).toLocaleTimeString()}`
       : 'Rejected records not checked yet');
-  } else {
-    parts.push('Separate export from the comparison files above');
   }
   status.textContent = parts.join(' · ');
+
   const allSorted = sortedVersions(snap.versions);
-  renderCards('operational-cards', snap.versions, allSorted.slice(0, MAX_SELECTED));
+  document.getElementById('empty-state').style.display = allSorted.length === 0 ? 'block' : 'none';
+  renderPicker('version-picker', allSorted, snap.versions, selection);
+  const shown = activeSelected(selection);
+  renderCards('version-cards', snap.versions, shown);
+  renderLearningCurve(snap.versions);
+  renderCubesChart('cubes-chart', 'cubes-legend', snap.versions, shown);
+  renderSmoothnessChart('smoothness-chart', snap, shown);
+  renderIntegrity(snap);
+  document.getElementById('footer-counts').textContent = `${snap.episode_count} records`;
+  return shown.reduce((n, v) => n + ((snap.versions[v] || {}).episode_count || 0), 0);
 }
 
 async function render() {
+  const generation = ++renderGeneration;
   const stats = await fetchStats();
+  if (generation !== renderGeneration) return;
   lastStats = stats;
-  renderHeader(stats);
-  const allSorted = sortedVersions(stats.controlled.versions);
-  document.getElementById('controlled-empty').style.display = allSorted.length === 0 ? 'block' : 'none';
-  renderPicker(allSorted, stats.controlled.versions);
-  const shown = activeSelected();
-  renderCards('controlled-cards', stats.controlled.versions, shown);
-  renderLearningCurve(stats.controlled.versions);
-  renderCubesChart(stats.controlled.versions, shown);
-  renderSmoothnessChart(stats.controlled, shown);
-  renderIntegrity(stats.controlled);
-  const totalEligible = shown.reduce((n, v) => n + ((stats.controlled.versions[v] || {}).episode_count || 0), 0);
-  await renderEvidenceTable(totalEligible);
-  renderOperational(stats);
-  const opN = stats.operational.episode_count;
-  document.getElementById('footer-counts').textContent = opN
-    ? `comparison: ${stats.controlled.episode_count} records · operational: ${opN} records`
-    : `comparison: ${stats.controlled.episode_count} records`;
+  const totalEligible = renderViews(stats);
+  await renderEvidenceTable(stats.snapshot.versions, totalEligible, generation);
 }
 
 render();

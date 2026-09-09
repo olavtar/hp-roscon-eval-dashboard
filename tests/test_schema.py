@@ -48,18 +48,6 @@ def test_invalid_cubes_placed_is_rejected():
     }) is None
 
 
-def test_summarize_eval_metadata():
-    records = [
-        {"eval_seed": 1000, "eval_scene": "place_cubes_on_tray", "eval_reset_mode": "per_episode"},
-        {"eval_seed": 1001, "eval_scene": "place_cubes_on_tray", "eval_reset_mode": "per_episode"},
-    ]
-    meta = schema.summarize_eval_metadata(records)
-    assert meta["present"] is True
-    assert meta["episode_count"] == 2
-    assert meta["scene_consistent"] is True
-    assert meta["unique_seed_count"] == 2
-
-
 def test_records_conflict_detects_field_differences():
     a = ep("v1")
     b = ep("v1", task_success=False)

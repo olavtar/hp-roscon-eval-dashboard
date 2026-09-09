@@ -13,12 +13,23 @@ case -- `list_bucket` just yields nothing.
 from __future__ import annotations
 
 import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator
 from urllib.parse import urlparse
 
 import boto3
 
 from eval_dashboard import schema
+
+log = logging.getLogger("eval_dashboard.minio")
+
+# Each GetObject is one independent, read-only round trip -- fetching them
+# one at a time makes startup take (episode count * round-trip time), which
+# over Tailscale (~300ms) turns a few thousand episodes into minutes. They
+# have no ordering dependency (Store dedupes by episode_id regardless of
+# arrival order), so fetch concurrently instead.
+LIST_BUCKET_WORKERS = 20
 
 
 class MinioSource:
@@ -32,9 +43,12 @@ class MinioSource:
 
     def list_bucket(self, bucket: str) -> Iterator[dict]:
         paginator = self._client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=bucket):
-            for obj in page.get("Contents", []):
-                normalized = self._get(bucket, obj["Key"])
+        keys = [obj["Key"] for page in paginator.paginate(Bucket=bucket) for obj in page.get("Contents", [])]
+        if not keys:
+            return
+        log.info("fetching %d object(s) from %s (%d concurrent)", len(keys), bucket, LIST_BUCKET_WORKERS)
+        with ThreadPoolExecutor(max_workers=LIST_BUCKET_WORKERS) as pool:
+            for normalized in pool.map(lambda k: self._get(bucket, k), keys):
                 if normalized:
                     yield normalized
 

@@ -78,7 +78,7 @@ def test_replay_is_deterministic_across_runs():
         assert first[version].episode_count == second[version].episode_count
 
 
-def test_reads_json_array_eval_file(tmp_path):
+def test_reads_json_array_file(tmp_path):
     payload = [
         {
             "episode_id": "a",
@@ -123,66 +123,3 @@ def test_string_false_is_not_treated_as_true(tmp_path):
     assert records[0]["has_failure"] is False
 
 
-def _eval_harness_file(model_version, episodes, seed_base=1000):
-    return {
-        "model_version": model_version,
-        "policy_path": "irrelevant",
-        "timestamp": "2026-09-08T00:00:00Z",
-        "eval_config": {"episodes": len(episodes), "seed_base": seed_base, "scene": "place_cubes_on_tray"},
-        "aggregate": {"n": len(episodes), "successes": sum(e["task_success"] for e in episodes)},
-        "episodes": episodes,
-    }
-
-
-def test_reads_eval_harness_shape(tmp_path):
-    # Matches docs/eval-records/phase3-ladder/*.json per
-    # data-contract-eval-dashboard.md -- aggregate+episodes, not the plain
-    # episode-record contract.
-    episodes = [
-        {"index": 0, "seed": 1000, "cubes_placed": 3, "task_success": True, "avg_smoothness": 0.004, "steps": 1200},
-        {"index": 1, "seed": 1001, "cubes_placed": 1, "task_success": False, "avg_smoothness": 0.002, "steps": 2900},
-    ]
-    (tmp_path / "eval-teacher-v1.json").write_text(json.dumps(_eval_harness_file("eval-teacher-v1", episodes)))
-    records = list(FileSource(str(tmp_path)).read())
-    assert len(records) == 2
-    assert all(r["model_version"] == "eval-teacher-v1" for r in records)
-    stats = aggregate.aggregate(records)["eval-teacher-v1"]
-    assert stats.episode_count == 2
-    assert stats.success_count == 1
-    # no curator verdict on eval-harness data -- must not trip the
-    # curated-only "incomplete" heuristic
-    assert stats.success_rate_incomplete is False
-    assert records[0]["eval_seed"] == 1000
-    assert records[0]["eval_scene"] == "place_cubes_on_tray"
-
-
-def test_eval_harness_seed_extension_merges_under_base_version(tmp_path):
-    # eval-teacher-v1-s1050.json is a second seed-batch of eval-teacher-v1,
-    # not a distinct policy -- mirrors ladder_report.py's own merge
-    # convention so the dashboard reproduces the same N=100 numbers.
-    base_episodes = [
-        {"index": 0, "seed": 1000, "cubes_placed": 3, "task_success": True, "avg_smoothness": 0.004, "steps": 1200},
-    ]
-    ext_episodes = [
-        {"index": 0, "seed": 1050, "cubes_placed": 3, "task_success": True, "avg_smoothness": 0.004, "steps": 1200},
-    ]
-    (tmp_path / "eval-teacher-v1.json").write_text(json.dumps(_eval_harness_file("eval-teacher-v1", base_episodes)))
-    (tmp_path / "eval-teacher-v1-s1050.json").write_text(
-        json.dumps(_eval_harness_file("eval-teacher-v1-s1050", ext_episodes, seed_base=1050))
-    )
-    records = list(FileSource(str(tmp_path)).read())
-    assert len(records) == 2
-    assert all(r["model_version"] == "eval-teacher-v1" for r in records)
-    ids = {r["episode_id"] for r in records}
-    assert len(ids) == 2  # distinct seeds -> distinct synthesized episode_ids, no accidental dedup
-
-
-def test_eval_harness_versions_survive_lineage_rules_when_used_as_controlled_data():
-    # apply_lineage_rules is operational-only and must never be applied to
-    # the controlled panel -- eval-*-tagged eval-harness data is exactly
-    # the controlled panel's normal content, not contamination.
-    from eval_dashboard import schema
-
-    records = [schema.normalize({"episode_id": "eval-teacher-v1-seed1000", "model_version": "eval-teacher-v1",
-                                  "task_success": True, "cubes_placed": 3, "avg_smoothness": 0.004})]
-    assert records[0]["model_version"] == "eval-teacher-v1"  # normalize() alone never filters lineage
