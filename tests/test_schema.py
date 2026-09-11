@@ -48,6 +48,18 @@ def test_invalid_cubes_placed_is_rejected():
     }) is None
 
 
+def test_rollout_duration_s_is_normalized():
+    raw = {
+        "episode_id": "a",
+        "model_version": "v1",
+        "task_success": True,
+        "cubes_placed": 3,
+        "rollout": {"steps": 100, "duration_s": 29.26},
+    }
+    n = schema.normalize(raw)
+    assert n["rollout_duration_s"] == 29.26
+
+
 def test_records_conflict_detects_field_differences():
     a = ep("v1")
     b = ep("v1", task_success=False)

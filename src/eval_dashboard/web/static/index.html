@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SO-ARM Policy Evaluation</title>
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=31">
 </head>
 <body>
   <header>
@@ -34,7 +34,7 @@
       <p>All three cubes placed &middot; injected failures excluded</p>
       <span class="right" id="origin-label"></span>
     </div>
-    <div id="status-line" class="no-data"></div>
+    <div id="status-line" class="no-data">Connecting to dashboard…</div>
     <section class="toolbar" id="version-picker" aria-label="Policy comparison"></section>
     <div id="version-cards" class="card-grid"></div>
     <div id="empty-state" class="no-data" style="display:none">
@@ -47,14 +47,9 @@
         <h3>Episode evidence</h3>
         <p>Raw rows behind the aggregates below &mdash; use these to verify exactly what was counted</p>
       </div>
-      <div class="table-note" id="evidence-note"></div>
+      <div class="table-note" id="evidence-note" aria-live="polite"></div>
       <div class="evidence-table-wrap">
-        <table>
-          <thead>
-            <tr><th>Version</th><th title="Curated fine-tune episodes from versions.yaml (e.g. 5 vs 10)">Fine-tune episodes</th><th>Episode</th><th>Result</th><th>Cubes</th><th title="Lower = smoother motion">Smoothness &darr;=smoother</th><th>Steps</th><th>Timestamp</th></tr>
-          </thead>
-          <tbody id="evidence-body"></tbody>
-        </table>
+        <div class="evidence-groups" id="evidence-groups"></div>
       </div>
     </div>
 
@@ -62,12 +57,9 @@
       <div class="panel">
         <div class="panel-head">
           <h3>Partial placement</h3>
-          <p>Episode count by peak cubes placed &mdash; failures stay visible</p>
+          <p>Each row is 100% of that policy&rsquo;s episodes, by peak cubes on the tray</p>
         </div>
-        <div class="panel-body">
-          <svg id="cubes-chart" class="chart" viewBox="0 0 720 260"></svg>
-          <div class="legend" id="cubes-legend"></div>
-        </div>
+        <div class="panel-body" id="cubes-table"></div>
       </div>
 
       <div class="panel">
@@ -100,6 +92,6 @@
     <span id="footer-counts"></span>
   </footer>
 
-  <script src="dashboard.js?v=11"></script>
+  <script src="dashboard.js?v=31"></script>
 </body>
 </html>

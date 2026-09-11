@@ -1,0 +1,54 @@
+---
+description: HP ROSCon eval dashboard — project context, data contract, and operational notes
+alwaysApply: true
+---
+
+# HP ROSCon Policy Evaluation Dashboard
+
+## Purpose
+Read-only dashboard proving the flywheel claim: a policy trained on more curated episodes has a measurably higher success rate. Measurement layer for the SO-ARM booth demo and policy promotion decisions.
+
+## Demo story (Conv 1)
+- SO-ARM sim runs ACT policy placing 3 cubes on a tray
+- Green cube randomly shifted 3cm — adapting to random placement is the new behavior
+- Baseline: known-good policy trained on 5 success episodes vs versions trained on 10/20/40 successes
+- Expect: fewer failures and smoother successes as training set grows
+
+## Data sources (read-only)
+| Mode | Config | Reads |
+|------|--------|-------|
+| `files` | `SOURCE_MODE=files`, `RECORDS_DIR` | Directory of episode JSON (booth/offline) |
+| `live` | `SOURCE_MODE=live`, `.env.local` | Kafka `episode-manifests` + MinIO `episodes-curated` + `episodes-rejected` |
+
+Live endpoints (Tailscale required): MinIO `http://10.0.0.49:30900`, Kafka `10.0.0.49:30903`
+
+## Critical data rules
+- **Success rate** = `task_success==true` / all eligible episodes. Must include **rejected** episodes — curated-only is ~100% by construction.
+- **has_failure** episodes: exclude (injected demo failures, not real outcomes)
+- **eval-*** model_versions: drop client-side (Kafka history still has them; MinIO was scrubbed)
+- **pre-teacher**: group `soarm-act-10ep-10k` and `soarm-act-v1` (legacy Phase-2 tags)
+- **Smoothness**: successes only (failures barely move → would make weak policy look smoother)
+- **dataset_path**: ignore, don't break on it
+- Group by `model_version` as-is; don't fix mislabeled history
+
+## Version mapping (`config/versions.yaml`, gitignored)
+```yaml
+upstream-act-teacher: 0    # baseline / teacher-as-shipped
+act-v2-ft160: 160          # fine-tuned on 160 curated successes
+```
+Leave fixture versions unmapped. Optional richer ladder: `docs/eval-records/phase3-ladder/*.json` in hp-roscon-flywheel repo (0→73%, 20→60%, 40→56%, 80→76%, 160→86%).
+
+## Run commands
+```bash
+./run.sh files   # offline, default RECORDS_DIR=tests/fixtures
+./run.sh live    # needs .env.local with S3_ACCESS_KEY/S3_SECRET_KEY (olga-readonly)
+```
+
+## Guardrails
+- Read-only — no writes to Kafka, MinIO, or sim
+- Runs on developer machine, not demo desktop
+- No pipeline code changes (episode_emitter, curator, sync-agent)
+- No persisted state — replay from source reproduces same numbers
+
+## Deferred / out of repo
+- Reverse nav link on live flywheel dashboard → `gitops/flywheel/dashboard.yaml` in hp-roscon-flywheel (see `docs/flywheel-nav-integration.md`)

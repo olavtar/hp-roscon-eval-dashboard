@@ -17,6 +17,7 @@ import os
 import pathlib
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable
 
 import yaml
@@ -51,6 +52,7 @@ class Store:
         self.duplicate_episode_ids = 0
         self.conflicting_episode_ids = 0
         self.rejected_last_checked: float | None = None
+        self._seed_complete = True
 
     def merge(self, records: Iterable[dict]) -> None:
         with self._lock:
@@ -113,6 +115,7 @@ class Store:
             duplicates = self.duplicate_episode_ids
             rejected_last_checked = self.rejected_last_checked
             origin = self.origin
+            seed_complete = self._seed_complete
         stats = aggregate.aggregate(records)
         versions = {}
         for v, s in stats.items():
@@ -142,6 +145,7 @@ class Store:
             "duplicate_episode_ids": duplicates,
             "conflicting_episode_ids": self.conflicting_episode_ids,
             "rejected_last_checked": rejected_last_checked,
+            "seed_complete": seed_complete,
             "smoothness_bin_edges": aggregate.SMOOTHNESS_BINS,
             "versions": versions,
         }
@@ -194,10 +198,33 @@ def run_live(store: Store) -> None:
     curated_bucket = os.environ.get("S3_CURATED_BUCKET", "episodes-curated")
     rejected_bucket = os.environ.get("S3_REJECTED_BUCKET", "episodes-rejected")
 
-    log.info("seeding from %s + %s", curated_bucket, rejected_bucket)
-    store.merge(schema.apply_lineage_rules(minio.list_bucket(curated_bucket)))
-    store.merge(schema.apply_lineage_rules(minio.list_bucket(rejected_bucket)))
-    store.rejected_last_checked = time.time()
+    store._seed_complete = False
+
+    def seed_from_minio() -> None:
+        log.info("seeding from %s + %s (background)", curated_bucket, rejected_bucket)
+        t0 = time.time()
+        try:
+
+            def load_bucket(bucket: str) -> list[dict]:
+                return list(minio.list_bucket(bucket))
+
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="seed") as pool:
+                curated_fut = pool.submit(load_bucket, curated_bucket)
+                rejected_fut = pool.submit(load_bucket, rejected_bucket)
+                store.merge(schema.apply_lineage_rules(curated_fut.result()))
+                store.merge(schema.apply_lineage_rules(rejected_fut.result()))
+            store.rejected_last_checked = time.time()
+            log.info(
+                "MinIO seed complete: %d episode(s) in %.1fs",
+                len(store.episodes()),
+                time.time() - t0,
+            )
+        except Exception:
+            log.exception("MinIO seed failed")
+        finally:
+            store._seed_complete = True
+
+    threading.Thread(target=seed_from_minio, daemon=True, name="minio-seed").start()
 
     def poll_rejected() -> None:
         # Rejected episodes never get a Kafka notification (only sync-agent

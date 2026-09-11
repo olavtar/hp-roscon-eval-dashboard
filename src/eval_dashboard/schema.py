@@ -86,6 +86,7 @@ def normalize(record: dict) -> dict | None:
         "timestamp": record.get("timestamp"),
         "curation_verdict": record.get("curation_verdict"),
         "rollout_steps": (record.get("rollout") or {}).get("steps") if isinstance(record.get("rollout"), dict) else record.get("rollout_steps"),
+        "rollout_duration_s": (record.get("rollout") or {}).get("duration_s") if isinstance(record.get("rollout"), dict) else record.get("rollout_duration_s"),
     }
     if record.get("raw_model_version"):
         normalized["raw_model_version"] = record["raw_model_version"]

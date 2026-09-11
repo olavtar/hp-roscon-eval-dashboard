@@ -1,15 +1,18 @@
 :root {
   color-scheme: light;
-  --surface: #fcfcfb;
-  --page: #f9f9f7;
-  --border: #e1e0d9;
-  --border-strong: #c3c2b7;
+  --surface: #ffffff;
+  --page: #f5f4ef;
+  --border: #bab8ac;
+  --border-strong: #8f8d80;
   --text: #0b0b0b;
   --text-2: #52514e;
   --text-muted: #898781;
   --good: #0ca30c;
+  --good-surface: #eef8ee;
   --warning: #fab219;
   --critical: #d03b3b;
+  --info: #2a78d6;
+  --info-surface: #eef5fd;
   --series-1: #2a78d6; /* blue   -- first version (baseline) */
   --series-2: #eb6834; /* orange -- second version */
   --series-3: #1baf7a; /* aqua   -- third version */
@@ -17,16 +20,19 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --surface: #1a1a19;
+    --surface: #202020;
     --page: #0d0d0d;
-    --border: #2c2c2a;
-    --border-strong: #383835;
+    --border: #464642;
+    --border-strong: #5c5c56;
     --text: #ffffff;
     --text-2: #c3c2b7;
     --text-muted: #898781;
     --good: #0ca30c;
+    --good-surface: #152015;
     --warning: #fab219;
     --critical: #e66767;
+    --info: #3987e5;
+    --info-surface: #151d28;
     --series-1: #3987e5;
     --series-2: #d95926;
     --series-3: #199e70;
@@ -59,14 +65,19 @@ header .subtitle { color: var(--text-muted); font-size: 12px; }
   padding: 5px 10px; font-size: 11px; font-weight: 600; color: var(--text-2);
 }
 .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip.live {
+  color: var(--good);
+  border-color: var(--good);
+  background: var(--good-surface);
+}
 a.backlink { font-size: 12px; color: var(--series-1); text-decoration: none; }
 a.backlink:hover { text-decoration: underline; }
 
 main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 48px; }
 
 .notice {
-  border: 1px solid var(--border-strong); border-left: 4px solid var(--warning);
-  background: var(--surface); padding: 10px 14px; border-radius: 4px;
+  border: 1px solid var(--border-strong); border-left: 4px solid var(--info);
+  background: var(--info-surface); padding: 10px 14px; border-radius: 4px;
   margin-bottom: 16px; font-size: 12px; color: var(--text-2);
 }
 
@@ -158,7 +169,15 @@ main { max-width: 1400px; margin: 0 auto; padding: 20px 24px 48px; }
   .two-col { grid-template-columns: 1fr; }
 }
 
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-top: 14px; }
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 14px;
+  /* Lifts cards off the page via depth, not just a border line -- easier
+     to tell panels apart from the background at a glance. */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
 .panel-head {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -204,6 +223,15 @@ th {
 td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 td.success { color: var(--good); font-weight: 600; }
 td.failed { color: var(--critical); font-weight: 600; }
+
+.placement-table .placement-policy { font-weight: 600; white-space: nowrap; }
+.placement-table .placement-policy .series-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle;
+}
+.placement-table .placement-n { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+.placement-table th .col-hint { font-weight: 400; text-transform: none; letter-spacing: 0; opacity: 0.85; }
+.placement-table td.placement-success { color: var(--good); font-weight: 700; }
+.placement-table td.placement-miss { color: var(--text-2); }
 .table-note {
   color: var(--text-muted);
   font-size: 11px;
@@ -213,16 +241,138 @@ td.failed { color: var(--critical); font-weight: 600; }
 }
 
 .evidence-table-wrap {
-  overflow-y: auto;
-  max-height: 12.25rem; /* header + ~5 rows */
+  overflow: auto;
+  scrollbar-gutter: stable;
+  /* Deliberately keep the compact preview height -- versions are collapsed
+     accordions now, so this mostly bounds how many *expanded* groups show
+     before the viewer has to scroll. */
+  max-height: 20rem;
   border-top: 1px solid var(--border);
+  padding: 0 16px;
 }
-.evidence-table-wrap table { margin: 0; }
-.evidence-table-wrap thead th {
+
+/* One collapsible <details> per selected version -- avoids scrolling past
+   one policy's hundreds of episodes to reach the next policy's. Version /
+   FT ep. live in the summary line instead of as their own table columns,
+   since FT ep. is a fixed per-version attribute (config/versions.yaml), not
+   something that varies row to row. */
+.evidence-group { border-bottom: 1px solid var(--border); }
+.evidence-group:last-child { border-bottom: none; }
+.evidence-group-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  font-size: 12px;
+  /* Sticks above the table's own sticky <thead> (see .evidence-group thead
+     th below) so the header you'd click to collapse a group never scrolls
+     out of view, no matter how far down its rows you've scrolled. */
   position: sticky;
   top: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+.evidence-group-summary::-webkit-details-marker { display: none; }
+.evidence-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-2);
+  transition: transform 0.15s ease;
+}
+.evidence-group-chevron::before { content: '\25B6'; }
+.evidence-group[open] > .evidence-group-summary .evidence-group-chevron { transform: rotate(90deg); color: var(--text); }
+.evidence-group-summary:hover .evidence-group-chevron { color: var(--text); }
+.evidence-group-version { font-weight: 600; }
+.evidence-group-meta { display: inline-flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 11px; }
+.evidence-group-body { padding: 0 0 12px; }
+.evidence-group-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 8px 4px 4px;
+}
+.load-more-btn {
+  font: inherit;
+  color: var(--info);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.load-more-btn:disabled { color: var(--text-muted); cursor: default; text-decoration: none; }
+
+.evidence-table { margin: 0; table-layout: fixed; width: 100%; }
+.evidence-group thead th {
+  position: sticky;
+  /* Matches .evidence-group-summary's measured rendered height (badge pill
+     + padding, naturally sized -- not a guessed value) so the column header
+     docks directly under the sticky group header with no gap or overlap. */
+  top: 38px;
   z-index: 1;
-  background: var(--page);
+  background: var(--surface);
+}
+
+/* The colgroup makes these widths unambiguous under table-layout: fixed.
+   Columns: Episode, Result, Cubes, Smoothness, Steps, Duration. */
+.evidence-table col.evidence-episode { width: 18%; }
+.evidence-table col.evidence-result { width: 18%; }
+.evidence-table col.evidence-cubes { width: 11%; }
+.evidence-table col.evidence-smoothness { width: 20%; }
+.evidence-table col.evidence-steps { width: 11%; }
+.evidence-table col.evidence-duration { width: 22%; }
+
+/* Column dividers -- makes the padding around short values (Cubes, Steps,
+   Smoothness, ...) read as deliberate column separation instead of an
+   unexplained gap when the card is much wider than the content needs. */
+.evidence-table th:not(:first-child),
+.evidence-table td:not(:first-child) {
+  border-left: 1px solid var(--border);
+}
+
+/* Only data cells are forced onto one line -- headers (esp. "Smoothness
+   ↓=smoother") are allowed to wrap so a long label doesn't force its
+   column wider than the short values it actually holds. */
+.evidence-table td:nth-child(1),
+.evidence-table td:nth-child(2),
+.evidence-table td:nth-child(3),
+.evidence-table td:nth-child(4),
+.evidence-table td:nth-child(5),
+.evidence-table td:nth-child(6) {
+  white-space: nowrap;
+}
+.evidence-table th:nth-child(1),
+.evidence-table td:nth-child(1) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.evidence-table th:nth-child(2),
+.evidence-table td:nth-child(2) {
+  text-align: center;
+}
+.evidence-table th:nth-child(3),
+.evidence-table td:nth-child(3),
+.evidence-table th:nth-child(4),
+.evidence-table td:nth-child(4),
+.evidence-table th:nth-child(5),
+.evidence-table td:nth-child(5),
+.evidence-table th:nth-child(6),
+.evidence-table td:nth-child(6) {
+  text-align: right;
+}
+.evidence-table th .col-hint,
+.evidence-table td .col-hint {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-left: 0.35em;
 }
 
 .chart { width: 100%; height: auto; display: block; }

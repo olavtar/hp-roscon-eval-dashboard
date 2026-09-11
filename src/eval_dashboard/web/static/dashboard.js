@@ -1,11 +1,14 @@
 const SERIES_VARS = ['--series-1', '--series-2', '--series-3'];
 const REFRESH_MS = 5000;
 const POLICY_LABELS = ['Policy A', 'Policy B', 'Policy C'];
+const EVIDENCE_PAGE_SIZE = 200;
 
 function makeSelectionState() { return { selected: ['', '', ''], lastKey: '' }; }
 const selection = makeSelectionState();
 let lastStats = null;
 let renderGeneration = 0;
+const evidenceGroups = new Map();
+let evidenceGroupSeq = 0;
 
 function esc(s) {
   return String(s).replace(/[&<>"'`]/g, c => ({
@@ -77,6 +80,7 @@ function niceTicks(maxCount, targetLines = 4) {
   return { step, top: step * targetLines };
 }
 function fmtNum(x, d = 4) { return x == null ? '--' : x.toFixed(d); }
+function fmtDuration(s) { return s == null ? '--' : `${Number(s).toFixed(1)}s`; }
 
 function originLabel(origin) {
   if (!origin) return '';
@@ -90,16 +94,18 @@ async function fetchStats() {
   return r.json();
 }
 
-async function fetchEpisodes(versions) {
-  const results = await Promise.all(
-    versions.map(v => fetch(`/api/episodes?model_version=${encodeURIComponent(v)}&limit=200`).then(r => r.json()))
-  );
-  return results.flat().sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+async function fetchEpisodes(versions, offset = 0) {
+  const query = new URLSearchParams({ limit: EVIDENCE_PAGE_SIZE, offset });
+  versions.forEach(v => query.append('model_version', v));
+  const response = await fetch(`/api/episodes?${query}`);
+  if (!response.ok) throw new Error(`episode request failed (${response.status})`);
+  return response.json();
 }
 
 function renderHeader(stats) {
   const isLive = stats.source_mode === 'live';
-  document.getElementById('source-label').textContent = isLive ? 'Live via Tailscale' : 'Source: saved files';
+  document.getElementById('source-label').textContent = isLive ? 'Live via Tailscale' : 'Saved files';
+  document.getElementById('source-chip').classList.toggle('live', isLive);
   document.getElementById('loaded-chip').textContent = 'Loaded ' + new Date().toLocaleTimeString();
   const back = document.getElementById('backlink');
   back.href = stats.live_dashboard_url;
@@ -115,29 +121,15 @@ function renderPicker(elId, allVersions, versionsObj, state) {
     return;
   }
   if (!state.selected.some(Boolean)) {
-    state.selected = [allVersions[0] || '', allVersions[1] || '', allVersions[2] || ''];
+    // Demo default: compare the first two mapped versions (teacher vs fine-tune).
+    // Policy C stays empty until the viewer picks a third.
+    state.selected = [allVersions[0] || '', allVersions[1] || '', ''];
   } else {
     state.selected = state.selected.map(v => (v && allVersions.includes(v)) ? v : '');
   }
   const key = allVersions.join('\0') + '|' + state.selected.join('\0');
   if (key === state.lastKey) return;
   state.lastKey = key;
-
-  // Group by `parent` (config/versions.yaml) so e.g. four independent
-  // fine-tunes of the same baseline show up nested under it via a native
-  // <optgroup> instead of an unrelated flat list. Versions with no known
-  // parent (or whose parent isn't itself in the list) stay top-level --
-  // never guess a lineage that isn't documented.
-  const childrenOf = {};
-  const isChild = new Set();
-  allVersions.forEach(v => {
-    const parent = (versionsObj[v] || {}).parent;
-    if (parent && allVersions.includes(parent)) {
-      (childrenOf[parent] = childrenOf[parent] || []).push(v);
-      isChild.add(v);
-    }
-  });
-  const topLevel = allVersions.filter(v => !isChild.has(v));
 
   // Options already picked in another slot stay selectable (never disabled)
   // -- picking one swaps the two slots (see the change handler below), so
@@ -154,13 +146,8 @@ function renderPicker(elId, allVersions, versionsObj, state) {
     const elsewhere = {};
     state.selected.forEach((v, j) => { if (v && j !== i) elsewhere[v] = POLICY_LABELS[j]; });
     let opts = '<option value="">—</option>';
-    topLevel.forEach(v => {
+    allVersions.forEach(v => {
       opts += optionTag(v, state.selected[i], elsewhere[v]);
-      if (childrenOf[v]) {
-        opts += `<optgroup label="↳ fine-tuned from ${esc(v)}">`;
-        childrenOf[v].forEach(c => { opts += optionTag(c, state.selected[i], elsewhere[c]); });
-        opts += '</optgroup>';
-      }
     });
     return `<div class="field"><label>${label}</label><select data-slot="${i}">${opts}</select></div>`;
   }).join('');
@@ -180,8 +167,8 @@ function renderPicker(elId, allVersions, versionsObj, state) {
       state.lastKey = '';
       // Repaint from cached stats immediately — render() only updates after fetchStats().
       if (lastStats) {
-        const totalEligible = renderViews(lastStats);
-        void renderEvidenceTable(lastStats.snapshot.versions, totalEligible, renderGeneration);
+        renderViews(lastStats);
+        renderEvidenceGroups(lastStats.snapshot.versions);
       }
       render();
     });
@@ -332,39 +319,44 @@ function renderLearningCurve(versionsObj) {
     `<text x="${(padL + W - padR) / 2}" y="${H - 4}" text-anchor="middle" class="caption">Curated fine-tune episodes</text>`;
 }
 
-function renderCubesChart(chartId, legendId, versionsObj, versionList) {
-  const svg = document.getElementById(chartId);
-  const legend = document.getElementById(legendId);
-  if (versionList.length === 0) { svg.innerHTML = ''; legend.innerHTML = ''; return; }
-  const W = 720, H = 260, padL = 50, padR = 20, padT = 20, padB = 40;
-  const buckets = [0, 1, 2, 3];
-  const maxCount = Math.max(1, ...versionList.flatMap(v => Object.values((versionsObj[v] || {}).cubes_placed || {})));
-  const { step, top } = niceTicks(maxCount);
-  const groupW = (W - padL - padR) / buckets.length;
-  const barW = Math.min(28, groupW / (versionList.length + 1));
-  let grid = '';
-  for (let g = 0; g <= 4; g++) {
-    const yy = padT + (g / 4) * (H - padT - padB);
-    grid += svgEl('line', { class: 'grid', x1: padL, y1: yy.toFixed(1), x2: W - padR, y2: yy.toFixed(1) });
-    grid += `<text x="${padL - 8}" y="${(yy + 4).toFixed(1)}" text-anchor="end">${top - g * step}</text>`;
+function cubeCount(cubesPlaced, bucket) {
+  const c = cubesPlaced || {};
+  return c[bucket] ?? c[String(bucket)] ?? 0;
+}
+
+function renderCubesTable(tableId, versionsObj, versionList) {
+  const el = document.getElementById(tableId);
+  if (!el) return;
+  if (versionList.length === 0) {
+    el.innerHTML = '';
+    return;
   }
-  let bars = '';
-  buckets.forEach((b, bi) => {
-    const groupX = padL + bi * groupW + (groupW - barW * versionList.length) / 2;
-    versionList.forEach((v, vi) => {
-      const count = ((versionsObj[v] || {}).cubes_placed || {})[b] || 0;
-      const h = (count / top) * (H - padT - padB);
-      const color = seriesColor(vi);
-      const bx = groupX + vi * barW;
-      const by = H - padB - h;
-      bars += `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${(barW - 2).toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="${color}"><title>${esc(v)}: ${count} episodes with ${b} cubes placed</title></rect>`;
-    });
-    bars += `<text x="${(padL + bi * groupW + groupW / 2).toFixed(1)}" y="${H - padB + 16}" text-anchor="middle">${b} cube${b === 1 ? '' : 's'}</text>`;
-  });
-  svg.innerHTML = grid + svgEl('line', { class: 'axis', x1: padL, y1: H - padB, x2: W - padR, y2: H - padB }) + bars;
-  legend.innerHTML = versionList.map((v, vi) =>
-    `<span><i style="background:${seriesColor(vi)}"></i>${esc(v)}</span>`
-  ).join('');
+  const buckets = [0, 1, 2, 3];
+  const header = buckets.map(b => {
+    if (b === 0) return '<th>0 cubes <span class="col-hint">miss</span></th>';
+    if (b === 3) return '<th>3 cubes <span class="col-hint">success</span></th>';
+    return `<th>${b} cube${b === 1 ? '' : 's'}</th>`;
+  }).join('');
+  const rows = versionList.map((v, vi) => {
+    const s = versionsObj[v] || {};
+    const n = s.episode_count || 0;
+    const color = seriesColor(vi);
+    const cells = buckets.map(b => {
+      const count = cubeCount(s.cubes_placed, b);
+      const pct = n ? Math.round(100 * count / n) : 0;
+      const cls = b === 3 ? ' class="placement-success"' : (b === 0 ? ' class="placement-miss"' : '');
+      return `<td${cls}>${pct}%</td>`;
+    }).join('');
+    return `<tr>
+      <td class="placement-policy"><span class="series-dot" style="background:${color}"></span>${esc(v)} <span class="placement-n">(${n} ep)</span></td>
+      ${cells}
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <table class="placement-table">
+      <thead><tr><th>Policy</th>${header}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 }
 
 function smoothnessKeys(edges) {
@@ -486,32 +478,166 @@ function renderIntegrity(snapshot) {
     </div>`;
 }
 
-async function renderEvidenceTable(versionsObj, totalEligible, generation) {
-  const versions = activeSelected(selection);
-  if (versions.length === 0) {
-    document.getElementById('evidence-body').innerHTML = '';
-    document.getElementById('evidence-note').textContent = '';
-    return;
-  }
-  const rows = await fetchEpisodes(versions);
-  if (generation !== renderGeneration) return;
-  const scrollHint = rows.length > 5 ? ' · scroll for more' : '';
-  document.getElementById('evidence-note').textContent =
-    `Showing ${rows.length} of ${totalEligible} eligible episodes for the selected policies${scrollHint}`;
-  document.getElementById('evidence-body').innerHTML = rows.map(r => {
-    const finetune = finetuneEpisodesLabel((versionsObj[r.model_version] || {}).dataset_size);
-    return `
+function evidenceRowsMarkup(rows) {
+  return rows.map(r => `
     <tr>
-      <td>${esc(r.model_version)}</td>
-      <td>${esc(finetune)}</td>
       <td>${esc((r.episode_id || '').slice(0, 8))}</td>
       <td class="${r.task_success ? 'success' : 'failed'}">${r.task_success ? '✓ Success' : '× Failed'}</td>
       <td>${r.cubes_placed != null ? r.cubes_placed + ' / 3' : '--'}</td>
-      <td>${fmtNum(r.avg_smoothness)}${r.task_success ? '' : ' (fail, excluded from mean)'}</td>
+      <td title="${r.task_success ? '' : 'Excluded from success-only mean'}">${r.task_success ? fmtNum(r.avg_smoothness) : '--'}</td>
       <td>${r.rollout_steps != null ? r.rollout_steps : '--'}</td>
-      <td>${esc(r.timestamp || '--')}</td>
-    </tr>`;
-  }).join('');
+      <td>${fmtDuration(r.rollout_duration_s)}</td>
+    </tr>`).join('');
+}
+
+function groupMetaMarkup(version, versionsObj) {
+  // Reuses the same badge classes/labels as the comparison cards above
+  // (roleFor/findBaselineKey) so "Baseline"/"Fine-tuned" reads identically
+  // in both places instead of a duller plain-text restatement here.
+  const s = versionsObj[version] || {};
+  const isBaseline = findBaselineKey(versionsObj) === version;
+  const role = roleFor(s, isBaseline);
+  const n = s.episode_count || 0;
+  return `<span class="badge ${role.badge}">${esc(role.label)}</span><span class="evidence-group-count">${esc(role.meta)} · ${n} episode(s)</span>`;
+}
+
+function groupSkeletonMarkup(version, idx, versionsObj) {
+  return `
+  <details class="evidence-group" data-idx="${idx}">
+    <summary class="evidence-group-summary">
+      <span class="evidence-group-chevron" aria-hidden="true"></span>
+      <span class="evidence-group-version">${esc(version)}</span>
+      <span class="evidence-group-meta">${groupMetaMarkup(version, versionsObj)}</span>
+    </summary>
+    <div class="evidence-group-body">
+      <table class="evidence-table">
+        <colgroup>
+          <col class="evidence-episode">
+          <col class="evidence-result">
+          <col class="evidence-cubes">
+          <col class="evidence-smoothness">
+          <col class="evidence-steps">
+          <col class="evidence-duration">
+        </colgroup>
+        <thead>
+          <tr>
+            <th>Episode</th>
+            <th>Result</th>
+            <th>Cubes</th>
+            <th title="Lower = smoother motion">Smoothness <span class="col-hint">&darr;=smoother</span></th>
+            <th>Steps</th>
+            <th title="Episode wall time from rollout.duration_s">Duration</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div class="evidence-group-note"></div>
+    </div>
+  </details>`;
+}
+
+function updateGroupNote(group) {
+  if (group.loadError) {
+    group.noteEl.textContent = `Showing ${group.loaded} of ${group.totalEligible} · couldn’t load more rows`;
+    return;
+  }
+  if (group.loading && group.loaded === 0) {
+    group.noteEl.textContent = 'Loading…';
+    return;
+  }
+  group.noteEl.textContent = `Showing ${group.loaded} of ${group.totalEligible} episode(s)`;
+  if (group.loading) {
+    group.noteEl.append(' · loading more…');
+  } else if (!group.exhausted) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'load-more-btn';
+    btn.textContent = 'Load more';
+    btn.addEventListener('click', () => void loadGroupPage(group));
+    group.noteEl.append(' · ', btn);
+  }
+}
+
+async function loadGroupPage(group) {
+  if (group.loading || group.exhausted) return;
+  group.loading = true;
+  group.loadError = false;
+  updateGroupNote(group);
+  try {
+    const rows = await fetchEpisodes([group.version], group.offset);
+    if (evidenceGroups.get(group.version) !== group) return; // selection changed mid-flight
+    group.tbody.insertAdjacentHTML('beforeend', evidenceRowsMarkup(rows));
+    group.loaded += rows.length;
+    group.offset += rows.length;
+    group.exhausted = rows.length < EVIDENCE_PAGE_SIZE || group.loaded >= group.totalEligible;
+  } catch (err) {
+    if (evidenceGroups.get(group.version) !== group) return;
+    group.loadError = true;
+    console.error('episode evidence request failed', err);
+  } finally {
+    if (evidenceGroups.get(group.version) === group) {
+      group.loading = false;
+      updateGroupNote(group);
+    }
+  }
+}
+
+function renderEvidenceGroups(versionsObj) {
+  const container = document.getElementById('evidence-groups');
+  const selected = new Set(activeSelected(selection));
+  const orderedVersions = sortedVersions(versionsObj).filter(v => selected.has(v));
+
+  if (orderedVersions.length === 0) {
+    evidenceGroups.forEach(g => g.el.remove());
+    evidenceGroups.clear();
+    document.getElementById('evidence-note').textContent = '';
+    return;
+  }
+
+  for (const [version, group] of evidenceGroups) {
+    if (!selected.has(version)) {
+      group.el.remove();
+      evidenceGroups.delete(version);
+    }
+  }
+
+  let prevEl = null;
+  orderedVersions.forEach(version => {
+    let group = evidenceGroups.get(version);
+    if (!group) {
+      const idx = evidenceGroupSeq++;
+      container.insertAdjacentHTML('beforeend', groupSkeletonMarkup(version, idx, versionsObj));
+      const el = container.querySelector(`[data-idx="${idx}"]`);
+      group = {
+        version, el,
+        tbody: el.querySelector('tbody'),
+        noteEl: el.querySelector('.evidence-group-note'),
+        metaEl: el.querySelector('.evidence-group-meta'),
+        offset: 0, loaded: 0, loading: false, loadError: false, opened: false,
+        totalEligible: (versionsObj[version] || {}).episode_count || 0,
+      };
+      group.exhausted = group.totalEligible === 0;
+      updateGroupNote(group);
+      el.addEventListener('toggle', () => {
+        if (el.open && !group.opened) {
+          group.opened = true;
+          void loadGroupPage(group);
+        }
+      });
+      evidenceGroups.set(version, group);
+    } else {
+      group.totalEligible = (versionsObj[version] || {}).episode_count || 0;
+      group.metaEl.innerHTML = groupMetaMarkup(version, versionsObj);
+      if (group.loaded >= group.totalEligible) group.exhausted = true;
+      updateGroupNote(group);
+    }
+    if (prevEl) prevEl.after(group.el); else container.prepend(group.el);
+    prevEl = group.el;
+  });
+
+  const totalEligible = orderedVersions.reduce((n, v) => n + ((versionsObj[v] || {}).episode_count || 0), 0);
+  document.getElementById('evidence-note').textContent =
+    `${totalEligible} eligible episode(s) across ${orderedVersions.length} selected polic${orderedVersions.length === 1 ? 'y' : 'ies'} — expand a version below to view its episodes.`;
 }
 
 function renderViews(stats) {
@@ -520,9 +646,12 @@ function renderViews(stats) {
 
   const status = document.getElementById('status-line');
   const versionCount = Object.keys(snap.versions).length;
-  const parts = snap.episode_count
-    ? [`${snap.episode_count} episode(s) loaded across ${versionCount} version(s)`]
-    : [];
+  const parts = [];
+  if (stats.source_mode === 'live' && snap.seed_complete === false) {
+    parts.push('Loading episodes from MinIO…');
+  } else if (snap.episode_count) {
+    parts.push(`${snap.episode_count} episode(s) loaded across ${versionCount} version(s)`);
+  }
   if (stats.source_mode === 'live') {
     parts.push(snap.rejected_last_checked
       ? `Rejected records last checked ${new Date(snap.rejected_last_checked * 1000).toLocaleTimeString()}`
@@ -536,20 +665,26 @@ function renderViews(stats) {
   const shown = activeSelected(selection);
   renderCards('version-cards', snap.versions, shown);
   renderLearningCurve(snap.versions);
-  renderCubesChart('cubes-chart', 'cubes-legend', snap.versions, shown);
+  renderCubesTable('cubes-table', snap.versions, shown);
   renderSmoothnessChart('smoothness-chart', snap, shown);
   renderIntegrity(snap);
   document.getElementById('footer-counts').textContent = `${snap.episode_count} records`;
-  return shown.reduce((n, v) => n + ((snap.versions[v] || {}).episode_count || 0), 0);
 }
 
 async function render() {
   const generation = ++renderGeneration;
-  const stats = await fetchStats();
-  if (generation !== renderGeneration) return;
-  lastStats = stats;
-  const totalEligible = renderViews(stats);
-  await renderEvidenceTable(stats.snapshot.versions, totalEligible, generation);
+  try {
+    const stats = await fetchStats();
+    if (generation !== renderGeneration) return;
+    lastStats = stats;
+    renderViews(stats);
+    renderEvidenceGroups(stats.snapshot.versions);
+  } catch (err) {
+    if (generation !== renderGeneration) return;
+    document.getElementById('status-line').textContent =
+      'Cannot reach dashboard API — container may still be starting after ./run.sh live. Retrying…';
+    console.error('dashboard render failed', err);
+  }
 }
 
 render();

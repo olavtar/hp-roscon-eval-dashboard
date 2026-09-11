@@ -122,9 +122,6 @@ upstream-act-teacher: 0    # baseline / teacher-as-shipped
 act-v2-ft160: 160          # fine-tuned on 160 curated successes
 ```
 
-To group fine-tunes under a parent in the comparison UI, use the nested form
-documented in `config/versions.example.yaml` (`size` + optional `parent`).
-
 ### Where it lives
 
 This dashboard is a separate app on your own machine — it doesn't live in the

@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator
 from urllib.parse import urlparse
 
 import boto3
+from botocore.config import Config
 
 from eval_dashboard import schema
 
@@ -28,17 +30,23 @@ log = logging.getLogger("eval_dashboard.minio")
 # one at a time makes startup take (episode count * round-trip time), which
 # over Tailscale (~300ms) turns a few thousand episodes into minutes. They
 # have no ordering dependency (Store dedupes by episode_id regardless of
-# arrival order), so fetch concurrently instead.
-LIST_BUCKET_WORKERS = 20
+# arrival order), so fetch concurrently instead. Pool size must match worker
+# count -- boto3 defaults to 10, which caps real parallelism below the thread
+# count and shows up as urllib3 "Connection pool is full" warnings.
+def fetch_workers() -> int:
+    return max(1, int(os.environ.get("MINIO_FETCH_WORKERS", "32")))
 
 
 class MinioSource:
     def __init__(self, endpoint: str, access_key: str, secret_key: str):
+        workers = fetch_workers()
+        self._workers = workers
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
+            config=Config(max_pool_connections=workers),
         )
 
     def list_bucket(self, bucket: str) -> Iterator[dict]:
@@ -46,8 +54,8 @@ class MinioSource:
         keys = [obj["Key"] for page in paginator.paginate(Bucket=bucket) for obj in page.get("Contents", [])]
         if not keys:
             return
-        log.info("fetching %d object(s) from %s (%d concurrent)", len(keys), bucket, LIST_BUCKET_WORKERS)
-        with ThreadPoolExecutor(max_workers=LIST_BUCKET_WORKERS) as pool:
+        log.info("fetching %d object(s) from %s (%d concurrent)", len(keys), bucket, self._workers)
+        with ThreadPoolExecutor(max_workers=self._workers) as pool:
             for normalized in pool.map(lambda k: self._get(bucket, k), keys):
                 if normalized:
                     yield normalized

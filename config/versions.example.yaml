@@ -1,10 +1,4 @@
-# model_version -> curated training-set size, and optionally parent version.
+# model_version -> curated training-set size.
 # Drives the learning curve and Baseline / Fine-tuned card labels.
-#
-#   version: <int>                        # baseline or unknown parent
-#   version: {size: <int>, parent: <id>}  # fine-tuned from parent
-#
 upstream-act-teacher: 0
-act-v2-ft160:
-  size: 160
-  parent: upstream-act-teacher
+act-v2-ft160: 160
