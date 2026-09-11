@@ -1,7 +1,10 @@
 :root {
   color-scheme: light;
   --surface: #ffffff;
-  --page: #f5f4ef;
+  /* Matches the Live Flywheel dashboard's page background (sampled
+     #f5f6f8) so navigating between the two via the nav link doesn't have
+     a visible background-color seam. */
+  --page: #f5f6f8;
   --border: #bab8ac;
   --border-strong: #8f8d80;
   --text: #0b0b0b;
