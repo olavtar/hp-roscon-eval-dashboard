@@ -61,8 +61,8 @@ else
   args+=(
     -e SOURCE_MODE=live
     -e S3_ENDPOINT="${S3_ENDPOINT:-http://10.0.0.49:30900}"
-    -e S3_CURATED_BUCKET="${S3_CURATED_BUCKET:-episodes-curated}"
-    -e S3_REJECTED_BUCKET="${S3_REJECTED_BUCKET:-episodes-rejected}"
+    -e S3_CURATED_BUCKET="${S3_CURATED_BUCKET:-episodes-curated-r2}"
+    -e S3_REJECTED_BUCKET="${S3_REJECTED_BUCKET:-episodes-rejected-r2}"
     -e KAFKA_BOOTSTRAP="${KAFKA_BOOTSTRAP:-10.0.0.49:30903}"
     -e KAFKA_TOPIC="${KAFKA_TOPIC:-episode-manifests}"
   )
